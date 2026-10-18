@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tazzyronth</title>
+<link rel="icon" href="/logo.png">
+<style>
+:root{--bg:#0b0a0d;--panel:#141218;--line:#26222c;--text:#c9c6cf;--dim:#7d7885;--mag:#E0218A;--crim:#B3123A;--add:#5fd38d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line)}
+header img{height:40px}
+h1{margin:0;font-size:15px;letter-spacing:.12em;color:var(--mag)}
+#sum{color:var(--dim)}
+#conn{margin-left:auto;font-size:12px}
+.ok{color:var(--add)}.bad{color:var(--crim)}.dim{color:var(--dim)}.mag{color:var(--mag)}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:12px 16px}
+@media(max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:12px;min-width:0}
+h2{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)}
+table{width:100%;border-collapse:collapse}
+td,th{padding:3px 6px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+th{color:var(--dim);font-weight:normal;border-bottom:1px solid var(--line)}
+#agents tbody tr{cursor:pointer}
+#agents tbody tr:hover{background:#1c1922}
+#agents tr.sel{background:#2a1020;box-shadow:inset 3px 0 var(--mag)}
+.feed{max-height:340px;overflow:auto}
+.feed div{white-space:pre-wrap;word-break:break-word}
+pre{margin:0;max-height:360px;overflow:auto;white-space:pre}
+.add{color:var(--add)}.del{color:var(--crim)}.hunk{color:var(--mag)}
+#graph{white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header><img src="/logo.png" alt=""><div><h1>AGENT TAZZYRONTH</h1><div id="sum">connecting…</div></div><span id="conn" class="dim">●</span></header>
+<main>
+<div>
+<section><h2>Agents</h2><table id="agents"><thead><tr><th>agent</th><th>role</th><th>task</th><th>now</th><th>last</th></tr></thead><tbody></tbody></table></section>
+<section><h2>Tasks</h2><div id="graph" class="dim">no tasks</div><table id="tasks"><thead><tr><th>id</th><th>state</th><th>owner</th><th>tries</th><th>title</th></tr></thead><tbody></tbody></table></section>
+<section><h2>Messages</h2><div id="msgs" class="feed dim">none</div></section>
+</div>
+<div>
+<section><h2 id="dtitle">Agent</h2><div id="now"></div><div id="feed" class="feed"></div></section>
+<section><h2 id="difft">Latest diff</h2><pre id="diff" class="dim">no edits yet</pre></section>
+</div>
+</main>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]);
+const hm=t=>t?new Date(t).toLocaleTimeString([],{hour12:false}):"";
+const ICON={done:"✔",running:"●",claimed:"●",review:"●",blocked:"◐",ready:"○",pending:"○",failed:"✖",cancelled:"⊘"};
+const ACTIVE=new Set(["claimed","running","blocked","review"]);
+let snap=null,sel=null,maxId=0,queued=false;
+const acts=new Map(),msgs=[],details=new Map();
+async function get(u){const r=await fetch(u,{credentials:"same-origin"});if(!r.ok)throw new Error(r.status+" "+u);return r.json()}
+
+function addAct(a){
+  if(acts.has(a.id))return;
+  acts.set(a.id,a);maxId=Math.max(maxId,a.id);
+  if(a.kind==="msg")msgs.push({ts:a.ts,from:a.agent,text:a.summary});
+}
+function onEvent(ev){ // hub-sent messages are not activity
+  if(ev.type==="msg.send"&&ev.data&&ev.data.from==="hub")msgs.push({ts:ev.time,from:"hub",text:"→ "+ev.data.to+" "+JSON.stringify(ev.data.body)});
+}
+function byAgent(id){const out=[];for(const a of acts.values())if(a.agent===id&&a.kind!=="usage")out.push(a);return out.sort((x,y)=>x.id-y.id)}
+function render(){if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;draw()})}}
+
+function draw(){
+  if(!snap)return;
+  const agents=snap.agents||[],tasks=snap.tasks||[];
+  const done=tasks.filter(t=>t.state==="done").length,blocked=tasks.filter(t=>t.state==="blocked").length;
+  const max=snap.swarm&&snap.swarm.max_agents,cost=snap.usage&&snap.usage.swarm&&snap.usage.swarm.cost_usd;
+  let s=agents.length+(max?"/"+max:"")+" agents · "+done+"/"+tasks.length+" tasks";
+  if(blocked)s+=" · "+blocked+" blocked";
+  if(snap.swarm&&snap.swarm.spawn)s+=" · spawn "+snap.swarm.spawn;
+  if(cost)s+=" · $"+cost.toFixed(2);
+  $("#sum").textContent=s;
+
+  // live agents plus the 3 most recently gone (known only from activity)
+  const live=new Set(agents.map(a=>a.id)),lastAct={};
+  for(const a of acts.values())if(a.agent!=="hub")lastAct[a.agent]=a.id;
+  const gone=Object.keys(lastAct).filter(id=>!live.has(id)).sort((x,y)=>lastAct[y]-lastAct[x]).slice(0,3);
+  const rows=[...agents,...gone.map(id=>({id,role:"worker",gone:true}))];
+  if(!sel)sel=(agents.find(a=>a.role!=="lead")||rows[0]||{}).id||null;
+  $("#agents tbody").innerHTML=rows.map(a=>{
+    const t=tasks.find(t=>t.owner===a.id&&ACTIVE.has(t.state));
+    const f=byAgent(a.id),now=[...f].reverse().find(x=>x.kind==="intent"),last=f[f.length-1];
+    return `<tr data-id="${esc(a.id)}"${a.id===sel?' class="sel"':""}><td class="${a.gone?"dim":"mag"}">${esc(a.id)}</td><td>${esc(a.role)}${a.adapter?" · "+esc(a.adapter):""}</td>`+
+      `<td>${a.gone?'<span class="bad">gone</span>':t?esc(t.id)+" "+ICON[t.state]:'<span class="dim">idle</span>'}</td><td>${esc(now?now.summary:"")}</td><td class="dim">${last?hm(last.ts):""}</td></tr>`;
+  }).join("")||'<tr><td colspan="5" class="dim">no agents</td></tr>';
+
+  // task graph as dependency layers: a ✔ → b ●  c ◐ → d ○
+  const depth={},byId=Object.fromEntries(tasks.map(t=>[t.id,t]));
+  const d=(t,seen=0)=>depth[t.id]??(depth[t.id]=seen>50?0:1+Math.max(-1,...(t.deps||[]).filter(x=>byId[x]).map(x=>d(byId[x],seen+1))));
+  const layers=[];tasks.forEach(t=>(layers[d(t)]??=[]).push(t));
+  $("#graph").innerHTML=layers.filter(Boolean).map(l=>l.map(t=>`<span class="${t.state==="failed"?"bad":t.state==="done"?"ok":ACTIVE.has(t.state)?"mag":""}">${esc(t.id)} ${ICON[t.state]||"?"}</span>`).join("  ")).join(" → ")||"no tasks";
+  $("#tasks tbody").innerHTML=tasks.map(t=>`<tr><td>${esc(t.id)}</td><td>${ICON[t.state]||""} ${esc(t.state)}</td><td>${esc(t.owner)}</td><td>${t.attempts||""}</td><td>${esc(t.title)}</td></tr>`).join("");
+
+  $("#msgs").innerHTML=msgs.slice(-20).reverse().map(m=>`<div><span class="dim">${hm(m.ts)}</span> <span class="mag">${esc(m.from)}</span> ${esc(m.text)}</div>`).join("")||"none";
+
+  drawAgent();
+}
+
+function drawAgent(){
+  $("#dtitle").textContent=sel?"Agent "+sel:"Agent";
+  const f=sel?byAgent(sel):[];
+  const now=[...f].reverse().find(x=>x.kind==="intent");
+  $("#now").innerHTML=now?`<b class="mag">NOW</b> ${esc(now.summary)}`:"";
+  const el=$("#feed"),stick=el.scrollTop+el.clientHeight>=el.scrollHeight-8;
+  el.innerHTML=f.slice(-200).map(a=>`<div><span class="dim">${hm(a.ts)}</span> <span class="${a.kind==="alert"||/fail/.test(a.summary)&&a.kind==="state"?"bad":a.kind==="edit"?"mag":""}">${esc(a.kind)}</span> ${esc(a.summary)}</div>`).join("")||'<span class="dim">no activity yet</span>';
+  if(stick)el.scrollTop=el.scrollHeight;
+  const e=[...f].reverse().find(a=>a.kind==="edit"&&a.source==="diff");
+  if(!e){$("#difft").textContent="Latest diff";$("#diff").textContent="no edits yet";return}
+  const det=e.detail||details.get(e.id);
+  if(!det&&e.detail_size>0&&!details.has(e.id)){details.set(e.id,null);get("/api/detail?id="+e.id).then(x=>{details.set(e.id,x);render()}).catch(()=>{})}
+  if(!det)return;
+  $("#difft").textContent=`Latest diff · ${det.path} +${det.added} −${det.removed}`;
+  $("#diff").innerHTML=String(det.diff||"").split("\n").map(l=>`<span class="${l.startsWith("@@")?"hunk":/^(\+\+\+|---) /.test(l)?"dim":l.startsWith("+")?"add":l.startsWith("-")?"del":""}">${esc(l)}</span>`).join("\n");
+}
+
+$("#agents").addEventListener("click",e=>{const tr=e.target.closest("tr[data-id]");if(tr){sel=tr.dataset.id;render()}});
+
+async function catchUp(){for(const a of await get("/api/activity?limit=500&after="+maxId))addAct(a);render()}
+async function start(){
+  try{snap=await get("/api/snapshot");await catchUp()}catch(e){$("#sum").textContent="error: "+e.message;return}
+  const es=new EventSource("/api/events");
+  es.onopen=()=>{$("#conn").className="ok";$("#conn").textContent="● live";catchUp().catch(()=>{})};
+  es.onerror=()=>{$("#conn").className="bad";$("#conn").textContent="● reconnecting"};
+  es.addEventListener("status",e=>{snap=JSON.parse(e.data);render()});
+  es.addEventListener("activity",e=>{addAct(JSON.parse(e.data));render()});
+  es.addEventListener("event",e=>{onEvent(JSON.parse(e.data));render()});
+}
+start();
+</script>
+</body>
+</html>
