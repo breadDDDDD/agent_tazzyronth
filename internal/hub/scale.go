@@ -124,7 +124,10 @@ func (h *Hub) scale(now time.Time) {
 		h.pruneLocked(ReasonFinished)
 	}
 
-	if len(h.conns) > 0 || len(h.taps) > 0 || h.sup.Running() {
+	// Hub-spawned workers don't count: with every host gone nobody is using
+	// the swarm, so it shuts down (Close kills the workers) instead of
+	// running on unattended.
+	if h.hostConnsLocked() > 0 || len(h.taps) > 0 {
 		h.quietFrom = now
 	} else if now.Sub(h.quietFrom) >= config.Seconds(h.cfg.Timeouts.HubIdle) {
 		select {
@@ -133,6 +136,18 @@ func (h *Hub) scale(now time.Time) {
 			close(h.idle)
 		}
 	}
+}
+
+// hostConnsLocked counts the connections that aren't hub-spawned workers'.
+// Called with h.mu held.
+func (h *Hub) hostConnsLocked() int {
+	n := 0
+	for c := range h.conns {
+		if !c.worker {
+			n++
+		}
+	}
+	return n
 }
 
 // spawnLocked pre-registers a worker and starts its process. Called with h.mu held.

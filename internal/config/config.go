@@ -64,7 +64,7 @@ type Timeouts struct {
 	IdleRetire    float64 `json:"idle_retire_s"`    // a hub-spawned worker idle this long is retired (if not needed)
 	SpawnCooldown float64 `json:"spawn_cooldown_s"` // minimum gap between automatic spawns
 	ScaleTick     float64 `json:"scale_tick_s"`     // how often the scaler runs
-	HubIdle       float64 `json:"hub_idle_s"`       // the hub exits after this long with no connections and no workers
+	HubIdle       float64 `json:"hub_idle_s"`       // the hub exits (killing its workers) after this long with no host connected
 	Stall         float64 `json:"stall_s"`          // an agent holding work that is silent this long is pinged
 	StallGrace    float64 `json:"stall_grace_s"`    // ... and treated as dead if still silent this long after the ping
 	FinishGrace   float64 `json:"finish_grace_s"`   // once every task has ended for this long, the workers are released
@@ -143,7 +143,7 @@ func Default() Config {
 		MaxAgents: 5,
 		SpawnMode: SpawnAuto,
 		Isolation: IsolationLease,
-		Timeouts:  Timeouts{IdleRetire: 90, SpawnCooldown: 5, ScaleTick: 2, HubIdle: 600, Stall: 300, StallGrace: 60, FinishGrace: 30},
+		Timeouts:  Timeouts{IdleRetire: 90, SpawnCooldown: 5, ScaleTick: 2, HubIdle: 30, Stall: 300, StallGrace: 60, FinishGrace: 30},
 		Budget:    Budget{MaxTotalSpawns: 20},
 		Retries:   Retries{MaxAttempts: 3, EscalateAfter: 2},
 		Scheduler: Scheduler{Weights: sched.Defaults},

@@ -122,6 +122,7 @@ func runWatch(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() { <-parentGone(); stop() }() // a watch nobody reads would keep the hub up forever
 	out := eventPrinter(os.Stdout, *asJSON)
 	if err := watch(ctx, *dir, out); err != nil && ctx.Err() == nil {
 		return 1 // stdout closed

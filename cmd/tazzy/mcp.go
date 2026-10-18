@@ -43,6 +43,13 @@ func runMCP(args []string) int {
 	} else {
 		srv.SetLauncher(func() string { return openDashboard(abs, launch.System()) })
 	}
+	// Serve blocks reading stdin, which a dead host may leave open: exit
+	// with the host so its hub connection closes and the hub can idle out.
+	go func() {
+		<-parentGone()
+		logger.Print("host exited; stopping")
+		os.Exit(0)
+	}()
 	if err := srv.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
 		logger.Print(err)
 		return 1

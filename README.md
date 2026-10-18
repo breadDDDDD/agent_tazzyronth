@@ -90,7 +90,7 @@ Optional, per project: `.tazzyronth/config.json`. Missing fields keep their defa
   "isolation": "lease",         // lease | worktree (git 2.38+, project = repo top level with a commit)
   "timeouts": {
     "idle_retire_s": 90, "spawn_cooldown_s": 5, "scale_tick_s": 2,
-    "hub_idle_s": 600,          // hub exits after this long with no connections and no workers
+    "hub_idle_s": 30,           // hub exits (killing its workers) after this long with no host connected
     "stall_s": 300, "stall_grace_s": 60,
     "finish_grace_s": 30        // once every task has ended this long, all workers are released
   },
@@ -128,7 +128,7 @@ Adapter placeholders: `{prompt}`, `{prompt_file}`, `{mcp_config}`, `{agent_id}`,
                  └─────────────┘ └────────────┘ └────────────┘
 ```
 
-Every host starts its own `tazzy mcp` shim; the first one starts a hub for the project (`.tazzyronth/hub.json` holds its loopback port and auth token). All state lives in the hub and is an append-only event log, replayed on restart. Workers pull tasks (`tazzy_next`, scored by priority, critical path, caps, file affinity and lease conflicts), lease files before editing, checkpoint with `tazzy_progress`, and block in `tazzy_wait` instead of polling. Messages for an agent ride along with its next tool result. The hub exits after `hub_idle_s` with nothing connected.
+Every host starts its own `tazzy mcp` shim; the first one starts a hub for the project (`.tazzyronth/hub.json` holds its loopback port and auth token). All state lives in the hub and is an append-only event log, replayed on restart. Workers pull tasks (`tazzy_next`, scored by priority, critical path, caps, file affinity and lease conflicts), lease files before editing, checkpoint with `tazzy_progress`, and block in `tazzy_wait` instead of polling. Messages for an agent ride along with its next tool result. Shims exit with their host, and the hub exits `hub_idle_s` after the last host disconnects (closing the editor or ending the session), killing any workers it spawned, so nothing keeps running once you stop using it.
 
 ## Limitations and unverified parts
 

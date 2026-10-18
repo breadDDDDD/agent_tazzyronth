@@ -102,7 +102,7 @@ type Hub struct {
 	idleSince map[string]time.Time // hub-spawned worker -> when it last had no task
 	lastSpawn time.Time
 	doneFrom  time.Time // since when every task has ended (zero while work remains)
-	quietFrom time.Time // since when there have been no connections and no workers
+	quietFrom time.Time // since when no host has been connected (workers' connections don't count)
 	closed    bool
 	act       *activity.Store
 	watch     *diff.Watcher                 // snapshots of write-leased files
@@ -124,6 +124,7 @@ type conn struct {
 	w        *proto.Writer
 	events   chan store.Event // non-nil once subscribed; guarded by Hub.mu
 	activity bool             // subscriber also wants activity events
+	worker   bool             // acts as a hub-spawned worker; doesn't keep the hub up. Guarded by Hub.mu
 }
 
 // Start replays the project's event log, listens on a random loopback port
@@ -259,8 +260,9 @@ func (h *Hub) Info() Info {
 	return h.info
 }
 
-// Idle is closed once the hub has had no connections and no workers for the
-// configured hub_idle_s; the owner should then Close it.
+// Idle is closed once the hub has had no connections but its own workers
+// for the configured hub_idle_s; the owner should then Close it, which
+// kills those workers.
 func (h *Hub) Idle() <-chan struct{} { return h.idle }
 
 // Close kills the workers, stops accepting, drops every connection, removes
@@ -381,7 +383,7 @@ func (h *Hub) call(c *conn, method string, params json.RawMessage) (any, error) 
 	if f == nil {
 		return nil, &proto.Error{Code: proto.CodeMethodNotFound, Message: "unknown method " + method}
 	}
-	if err := h.touch(method, params); err != nil {
+	if err := h.touch(c, method, params); err != nil {
 		return nil, err
 	}
 	return f(h, c, params)
@@ -392,7 +394,7 @@ func (h *Hub) call(c *conn, method string, params json.RawMessage) (any, error) 
 // an agent that has been removed is refused, so a stalled agent that comes
 // back can't touch work that was given to someone else; only a join (which
 // starts it over) gets through.
-func (h *Hub) touch(method string, params json.RawMessage) error {
+func (h *Hub) touch(c *conn, method string, params json.RawMessage) error {
 	var who struct{ Agent, From, By string }
 	json.Unmarshal(params, &who) // best effort: most params are objects
 	id := cmp.Or(who.Agent, who.From, who.By)
@@ -411,6 +413,9 @@ func (h *Hub) touch(method string, params json.RawMessage) error {
 	}
 	h.seen[id] = time.Now()
 	delete(h.pinged, id)
+	if h.sup.Has(id) {
+		c.worker = true
+	}
 	return nil
 }
 
