@@ -1,0 +1,11 @@
+{"type":"thread.started","thread_id":"th_1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Planning**"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc 'go test ./...'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"bash -lc 'go test ./...'","aggregated_output":"ok  pkg\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"src/a.go","kind":"update"},{"path":"src/b.go","kind":"add"}],"status":"completed"}}
+{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"tazzyronth","tool":"tazzy_progress","arguments":{"note":"x"},"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"All tests pass."}}
+garbage
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":50}}
+{"type":"turn.failed","error":{"message":"rate limited"}}

@@ -1,0 +1,10 @@
+{"type":"init","timestamp":"2026-01-01T00:00:00Z","session_id":"g1","model":"gemini-x"}
+{"type":"message","role":"user","content":"do it"}
+{"type":"message","role":"assistant","content":"Looking at ","delta":true}
+{"type":"message","role":"assistant","content":"the code.","delta":true}
+{"type":"tool_use","tool_name":"read_file","tool_id":"t1","parameters":{"absolute_path":"/repo/a.go"}}
+{"type":"tool_result","tool_id":"t1","status":"success","output":"package a"}
+{"type":"tool_use","tool_name":"run_shell_command","tool_id":"t2","parameters":{"command":"make test"}}
+{"type":"tool_result","tool_id":"t2","status":"error","output":"","error":{"type":"exit","message":"exit code 2"}}
+{"type":"message","role":"assistant","content":"Tests fail.","delta":true}
+{"type":"result","status":"success","stats":{"total_tokens":300,"input_tokens":250,"output_tokens":50,"duration_ms":10,"tool_calls":2}}
