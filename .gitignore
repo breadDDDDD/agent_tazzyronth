@@ -1,0 +1,6 @@
+/bin/
+/dist/
+.tazzyronth/
+*.exe
+*.test
+*.out
