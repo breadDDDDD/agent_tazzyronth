@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "tazzyronth": { "command": "tazzy", "args": ["mcp"] }
+  }
+}

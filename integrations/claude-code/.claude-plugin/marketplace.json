@@ -1,0 +1,6 @@
+{
+  "name": "tazzyronth",
+  "owner": { "name": "Agent Tazzyronth" },
+  "description": "Agent Tazzyronth for Claude Code",
+  "plugins": [{ "name": "tazzyronth", "source": "./" }]
+}

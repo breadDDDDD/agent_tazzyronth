@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tazzyronth": {
+      "type": "stdio",
+      "command": "tazzy",
+      "args": ["mcp"]
+    }
+  }
+}

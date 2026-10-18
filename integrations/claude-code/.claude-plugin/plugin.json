@@ -1,0 +1,9 @@
+{
+  "name": "tazzyronth",
+  "displayName": "Agent Tazzyronth",
+  "version": "0.1.0",
+  "description": "Agent swarm coordinator: /tazzy command, tazzyronth MCP server, activity hooks and a live swarm pane.",
+  "author": { "name": "Agent Tazzyronth" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

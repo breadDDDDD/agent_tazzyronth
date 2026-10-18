@@ -1,0 +1,4 @@
+# Append to ~/.codex/config.toml (or run: codex mcp add tazzyronth -- tazzy mcp).
+[mcp_servers.tazzyronth]
+command = "tazzy"
+args = ["mcp"]

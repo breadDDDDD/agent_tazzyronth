@@ -1,0 +1,20 @@
+{
+  "modules": ["./register.tsx"],
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report", "-enforce"], "timeout": 5 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report"], "async": true }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report"], "async": true }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report"], "async": true }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report"], "async": true }] }
+    ]
+  }
+}

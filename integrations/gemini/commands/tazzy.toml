@@ -1,0 +1,11 @@
+description = "Lead an Agent Tazzyronth swarm: /tazzy <goal> [--max N]"
+prompt = """
+Lead an Agent Tazzyronth swarm for this goal (an optional `--max N` is the maximum number of workers):
+
+{{args}}
+
+1. Call the tazzyronth MCP tool `tazzy_start` with `goal` set to that goal (and `max_agents` set to N if given).
+2. Follow the lead playbook in its result, passing `agent="lead"` on every later tazzy_* call.
+
+If no tazzy_* tools are available, tell the user to run `tazzy init` and restart this session.
+"""
