@@ -243,3 +243,58 @@ func TestUnattributedEditAlert(t *testing.T) {
 		}
 	}
 }
+
+// Host sessions report no usage in hook payloads: their tokens are read from
+// the transcripts the payloads point at, once each, across hub restarts.
+func TestHookTranscriptUsage(t *testing.T) {
+	dir := t.TempDir()
+	h, _, call := actHub(t, dir, 0)
+	tdir := t.TempDir()
+	sess := filepath.Join(tdir, "S.jsonl")
+	line := func(id string, in, out int) string {
+		return fmt.Sprintf(`{"type":"assistant","message":{"id":%q,"content":[],"usage":{"input_tokens":%d,"output_tokens":%d}}}`+"\n", id, in, out)
+	}
+	writeFile(t, tdir, "S.jsonl", line("m1", 100, 10)+line("m1", 100, 10)+line("m2", 5, 1))
+	writeFile(t, tdir, "S/subagents/agent-sub-1.jsonl", line("s1", 40, 4))
+	hook := func(payload string) {
+		t.Helper()
+		var r HookResult
+		call("activity.hook", HookParams{Payload: json.RawMessage(payload)}, &r)
+	}
+	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	usage := func(call func(string, any, any)) map[string]activity.Tokens {
+		var snap Snapshot
+		call("status", nil, &snap)
+		if snap.Usage == nil {
+			return nil
+		}
+		return snap.Usage.Agents
+	}
+	// Bind the session to the lead and the subagent to w2.
+	hook(`{"session_id":"S","hook_event_name":"PreToolUse","tool_name":"mcp__t__tazzy_status","tool_input":{"agent":"lead"}}`)
+	hook(`{"session_id":"S","agent_id":"sub-1","hook_event_name":"PreToolUse","tool_name":"mcp__t__tazzy_next","tool_input":{"agent":"w2"}}`)
+
+	hook(`{"session_id":"S","hook_event_name":"Stop","transcript_path":` + q(sess) + `}`)
+	hook(`{"session_id":"S","agent_id":"sub-1","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"x"},"tool_response":{},"transcript_path":` + q(sess) + `}`)
+	hook(`{"session_id":"S","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"x"},"tool_response":{},"transcript_path":` + q(sess) + `}`)
+	u := usage(call)
+	if u["lead"] != (activity.Tokens{Input: 105, Output: 11}) || u["w2"] != (activity.Tokens{Input: 40, Output: 4}) {
+		t.Fatalf("usage = %+v", u)
+	}
+
+	// Appended lines are counted on the next event; a restarted hub resumes.
+	f, _ := os.OpenFile(sess, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(line("m3", 1, 1))
+	f.Close()
+	hook(`{"session_id":"S","hook_event_name":"Stop","transcript_path":` + q(sess) + `}`)
+	if got := usage(call)["lead"]; got != (activity.Tokens{Input: 106, Output: 12}) {
+		t.Fatalf("after append: %+v", got)
+	}
+	h.Close()
+	_, _, call2 := actHub(t, dir, 0)
+	var r HookResult
+	call2("activity.hook", HookParams{Agent: "lead", Payload: json.RawMessage(`{"session_id":"S","hook_event_name":"Stop","transcript_path":` + q(sess) + `}`)}, &r)
+	if got := usage(call2)["lead"]; got != (activity.Tokens{Input: 106, Output: 12}) {
+		t.Fatalf("after restart: %+v", got)
+	}
+}

@@ -16,13 +16,20 @@ type Hook struct {
 	Agent string
 	// Activity to record; Kind is "" when there is nothing worth recording.
 	Activity Activity
+	// Transcript is the JSONL transcript of whoever Key names, set on the
+	// events after which it is worth reading for token usage (PostToolUse,
+	// PostToolUseFailure, SubagentStop, Stop). For a subagent it is the
+	// subagent's own transcript (agent_transcript_path, else derived from
+	// transcript_path and agent_id with SubagentTranscript); it may not exist.
+	Transcript string
 }
 
 // FromHook decodes a Claude Code hook payload (PreToolUse, PostToolUse,
-// PostToolUseFailure, SubagentStart, SubagentStop). Assumed fields:
-// session_id, hook_event_name, tool_name, tool_input, tool_response, error,
-// and agent_id/agent_type when the event comes from a subagent. Unknown
-// events and fields are ignored.
+// PostToolUseFailure, SubagentStart, SubagentStop, Stop). Assumed fields:
+// session_id, hook_event_name, transcript_path, tool_name, tool_input,
+// tool_response, error, agent_id/agent_type when the event comes from a
+// subagent, and agent_transcript_path on SubagentStop. Unknown events and
+// fields are ignored.
 func FromHook(payload []byte) Hook {
 	var p struct {
 		Session   string          `json:"session_id"`
@@ -33,6 +40,8 @@ func FromHook(payload []byte) Hook {
 		Error     json.RawMessage `json:"error"`
 		AgentID   string          `json:"agent_id"`
 		AgentType string          `json:"agent_type"`
+		Path      string          `json:"transcript_path"`
+		AgentPath string          `json:"agent_transcript_path"`
 	}
 	if json.Unmarshal(payload, &p) != nil {
 		return Hook{}
@@ -50,6 +59,13 @@ func FromHook(payload []byte) Hook {
 		h.Agent = in.Agent
 		if h.Agent == "" && (tool == "tazzy_join" || tool == "tazzy_start") {
 			h.Agent = findAgent(p.Response, 0)
+		}
+	}
+	switch p.Event {
+	case "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop":
+		h.Transcript = p.AgentPath
+		if h.Transcript == "" && p.Path != "" {
+			h.Transcript = SubagentTranscript(p.Path, p.AgentID)
 		}
 	}
 	switch p.Event {

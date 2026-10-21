@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -59,4 +60,64 @@ func TestControl(t *testing.T) {
 	if res, _, isErr := w.call("tazzy_next", map[string]any{}); !isErr {
 		t.Errorf("retired worker got next: %v", res)
 	}
+}
+
+// TestPauseStop covers tazzy_control pause/resume/stop and what tazzy_next
+// and tazzy_status say meanwhile.
+func TestPauseStop(t *testing.T) {
+	dir := t.TempDir()
+	h, err := hub.Start(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	connect := func(context.Context) (*hub.Client, error) { return hub.Connect(dir) }
+
+	lead := newClient(t, connect)
+	lead.mustCall("tazzy_start", map[string]any{"goal": "g", "spawn": "host"})
+	lead.mustCall("tazzy_plan", map[string]any{"tasks": []map[string]any{{"id": "x"}, {"id": "y"}}})
+	w := newClient(t, connect)
+	w.mustCall("tazzy_join", map[string]any{})
+
+	if res, _ := lead.mustCall("tazzy_control", map[string]any{"action": "pause"}); res["state"] != hub.RunPaused {
+		t.Fatalf("pause: %v", res)
+	}
+	if res, _ := w.mustCall("tazzy_next", map[string]any{"wait": 1}); res["task"] != nil || res["state"] != hub.RunPaused || !strings.Contains(res["note"].(string), "paused") {
+		t.Fatalf("next while paused: %v", res)
+	}
+	if res, _ := lead.mustCall("tazzy_status", map[string]any{}); res["state"] != hub.RunPaused {
+		t.Errorf("status while paused: %v", res)
+	}
+	if res, _ := lead.mustCall("tazzy_control", map[string]any{"action": "resume"}); res["state"] != hub.RunRunning {
+		t.Fatalf("resume: %v", res)
+	}
+	if res, _ := lead.mustCall("tazzy_status", map[string]any{}); res["state"] != nil {
+		t.Errorf("status while running: %v", res)
+	}
+	if res, _ := w.mustCall("tazzy_next", map[string]any{}); res["task"] == nil {
+		t.Fatalf("next after resume: %v", res)
+	}
+
+	if res, _ := lead.mustCall("tazzy_control", map[string]any{"action": "stop"}); res["state"] != hub.RunStopped {
+		t.Fatalf("stop: %v", res)
+	}
+	res, inbox := w.mustCall("tazzy_next", map[string]any{})
+	if res["task"] != nil || res["state"] != hub.RunStopped || !strings.Contains(res["note"].(string), "exit") {
+		t.Fatalf("next after stop: %v", res)
+	}
+	if !strings.Contains(mustJSONString(t, inbox), "swarm stopped by lead") {
+		t.Errorf("no stop directive in inbox: %v", inbox)
+	}
+	if res, _, isErr := lead.call("tazzy_control", map[string]any{"action": "resume"}); !isErr {
+		t.Errorf("resume after stop: %v", res)
+	}
+}
+
+func mustJSONString(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

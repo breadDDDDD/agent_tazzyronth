@@ -13,6 +13,7 @@ import (
 	"tazzyronth/assets"
 	"tazzyronth/internal/activity"
 	"tazzyronth/internal/graph"
+	"tazzyronth/internal/hub"
 	"tazzyronth/internal/lease"
 )
 
@@ -127,7 +128,7 @@ func (m *Model) header(w int) []string {
 	if u := m.usage(""); u.Total() > 0 {
 		sum += " · " + usageText(u)
 	}
-	l1 := logo[1] + p.paint(stText, sum)
+	l1 := logo[1] + m.badge() + p.paint(stText, sum)
 
 	l2 := logo[2]
 	switch {
@@ -137,6 +138,18 @@ func (m *Model) header(w int) []string {
 		l2 += p.paint(stDim, clean(m.Dir))
 	}
 	return []string{l0, l1, l2}
+}
+
+// badge marks a paused or stopped swarm at the start of the summary line.
+func (m *Model) badge() string {
+	p := m.p()
+	switch m.runState() {
+	case hub.RunPaused:
+		return p.paint(stAccent, "⏸ PAUSED") + "  "
+	case hub.RunStopped:
+		return p.paint(stErr, "■ STOPPED") + "  "
+	}
+	return ""
 }
 
 // started is when the swarm began: the earliest join or activity.
@@ -354,6 +367,14 @@ func (m *Model) msgLine(msg message, long bool) string {
 
 type key struct{ k, long, short string }
 
+// pauseKey is the footer entry of p: pause, or resume while paused.
+func (m *Model) pauseKey() key {
+	if m.runState() == hub.RunPaused {
+		return key{"p", "resume", "resume"}
+	}
+	return key{"p", "pause", "pause"}
+}
+
 func (m *Model) keys() []key {
 	switch m.view {
 	case vAgent:
@@ -363,7 +384,7 @@ func (m *Model) keys() []key {
 	case vOverview:
 		return []key{{"↑↓", "select", "sel"}, {"enter", "agent", "open"}, {"a", "activity", "act"}, {"F", "files", "files"},
 			{"g", "graph", "graph"}, {"m", "messages", "msgs"}, {"b", "board", "board"}, {"u", "usage", "usage"},
-			{"k", "kill", "kill"}, {"q", "quit", "quit"}}
+			{"k", "kill", "kill"}, m.pauseKey(), {"x", "stop", "stop"}, {"q", "quit", "quit"}}
 	case vMessages:
 		return []key{{"↑↓", "scroll", "scroll"}, {"/", "filter", "filter"}, {"esc", "back", "back"}, {"q", "quit", "quit"}}
 	}
@@ -397,6 +418,17 @@ func (m *Model) footer(w int) string {
 	}
 	if width(long) < w {
 		return long
+	}
+	// Still too wide: drop view shortcuts (least needed first) until it fits.
+	for _, drop := range []string{"u", "b", "F", "g", "a"} {
+		if width(short) < w {
+			break
+		}
+		ks = slices.DeleteFunc(ks, func(k key) bool { return k.k == drop })
+		short = prefix
+		for _, k := range ks {
+			short += " " + p.paint(stAccent, k.k) + " " + k.short
+		}
 	}
 	return short
 }

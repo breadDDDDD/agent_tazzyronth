@@ -6,12 +6,13 @@ Tazzyronth (`tazzy`) is a lightweight agent-swarm coordinator. You give your age
 
 ## Features
 
-- **Elastic swarm**: `max_agents` is a ceiling. In hub spawn mode the hub launches headless workers (`claude -p`, `codex exec`, `gemini -p`) to match the parallel width of the task graph and retires idle ones.
+- **Elastic swarm**: `max_agents` is a ceiling. In hub spawn mode the hub launches headless workers (`claude -p`, `codex exec`, `gemini -p`, `agy -p`) to match the parallel width of the task graph and retires idle ones.
 - **Coordination**: shared task DAG with deps and caps, message bus (`agent:`, `role:`, `task:`, `topic:`, `broadcast`), shared board and decision log, and file leases (globs, read/write, TTL).
 - **Clean finish**: once every task has ended (and no follow-up was proposed within `finish_grace_s`), the hub releases all workers, host subagents included; `tazzy_start` also releases idle workers left over from an earlier swarm, so they never count against the next `max_agents`.
+- **Pause and stop**: pause the swarm (no new tasks handed out, nothing spawned; running tasks finish), resume it, or stop it (every open task cancelled, hub-spawned workers retired, all agents told to exit) from the lead (`tazzy_control`) or the dashboards.
 - **Self-healing**: stalled or dead agents are detected, their leases released and their task requeued with checkpoints. Retries, escalation to the lead, and failure cascade to dependents.
 - **Isolation**: `lease` (shared checkout, default) or `worktree` (one git worktree per agent; finished work is merged into a `tazzy/integration-*` branch, never into your checkout; conflicts become resolve tasks).
-- **Observability**: per-agent activity (tool calls, commands, edits with live diffs, intent, token use and cost where the CLI reports it), unleased-edit alerts, terminal dashboard, an in-Claude-Code pane, and a local web view.
+- **Observability**: per-agent activity (tool calls, commands, edits with live diffs, intent, token use and cost where the CLI reports it; host-mode Claude Code sessions and their subagents are counted from their transcripts), unleased-edit alerts, terminal dashboard, an in-Claude-Code pane, and a local web view.
 - **Featherweight**: stdlib plus `golang.org/x/sys` and `golang.org/x/term`; release binaries are 7-8 MB.
 
 ## Install
@@ -44,7 +45,7 @@ tazzy doctor        # hub, PATH, adapter CLIs, git, terminal, Claude Code plugin
 | **Claude Code** | Plugin written to `~/.tazzyronth/claude-code/`. Install once: `claude plugin marketplace add ~/.tazzyronth/claude-code` then `claude plugin install tazzyronth@tazzyronth` (or `/plugin` inside Claude Code). Try without installing: `claude --plugin-dir integrations/claude-code` | `/tazzy <goal> [--max N]` (full name `/tazzyronth:tazzy`) |
 | **Codex** | `[mcp_servers.tazzyronth]` in `~/.codex/config.toml` (or `$CODEX_HOME`), skill `~/.agents/skills/tazzy/SKILL.md` | `$tazzy <goal>` (or pick it from `/skills`) |
 | **Gemini CLI** | `mcpServers` in `~/.gemini/settings.json`, command `~/.gemini/commands/tazzy.toml` | `/tazzy <goal>` |
-| **Antigravity** (CLI + IDE) | `~/.gemini/config/mcp_config.json`, skills in `~/.gemini/antigravity-cli/skills/tazzy/` and `~/.gemini/config/skills/tazzy/` | `/tazzy <goal>` |
+| **Antigravity** (CLI + IDE) | `~/.gemini/config/mcp_config.json`, skills in `~/.gemini/antigravity-cli/skills/tazzy/` and `~/.gemini/config/skills/tazzy/`, and the `mcp(tazzyronth/*)` allow rule in `~/.gemini/antigravity-cli/settings.json` (headless `agy` workers need it) | `/tazzy <goal>` |
 | **Cursor** | `~/.cursor/mcp.json`, skill `~/.agents/skills/tazzy/SKILL.md` (shared with Codex) | `/tazzy <goal>` |
 | **Any MCP client** | Register the stdio server `tazzy mcp` (add `-dir <project>` to pin the project); manual snippets are in `integrations/` | Use the MCP prompt `tazzy` (arg `goal`), or call the `tazzy_start` tool |
 
@@ -56,26 +57,29 @@ There is no headless `tazzy run <goal>` yet; a swarm is always led from an agent
 
 - **Terminal**: `tazzy tui [-dir DIR] [-no-splash]`. `tazzy_start` opens it next to you (tmux / WezTerm / kitty / Windows Terminal split, else a new OS terminal window; config `tui.open`). It waits for the hub, so it can be opened any time.
   - Overview: `↑↓` select, `enter` agent detail, `k` retire (y/N), `m` messages.
+  - Swarm: `p` pause/resume, `x` stop (y/N). The header shows a `⏸ PAUSED` or `■ STOPPED` badge.
   - Anywhere: `a` swarm activity, `F` files, `g` task graph, `b` board, `u` usage, `esc` back, `q`/Ctrl+C quit, `↑↓ PgUp PgDn Home End` scroll.
   - Agent detail: `↑↓` move (stops follow), `f` follow, `enter` expand event, `o` latest command output, `d` cycle diff file, `←→` previous/next agent, `m` message the agent (`tab` toggles directive/info), `k` retire.
   - `-frame 120x40 [-agent ID]` prints one frame without a terminal.
-- **Inside Claude Code** (plugin): a status line and a band above the prompt while a swarm runs, toasts for failures/reassignments/deaths, and a `tazzyronth` pane with the agent table, the selected agent's feed and latest diff. `/tazzy-pane` reopens it. Built on `tazzy watch --json`.
-- **Web view**: read-only page on `127.0.0.1`. Opens automatically from IDE terminals (VS Code, Cursor, Antigravity) or with `tui.open: "web"`; also `tazzy hub --web` or config `"web": true`. The URL (with token) is in `tazzy_start`'s `dashboard` field, or build it from `.tazzyronth/hub.json`: `http://127.0.0.1:<web>/?token=<token>`.
-- **Plain**: `tazzy status [-dir DIR]` (summary), `tazzy status --line` (one line for status bars), `tazzy watch [--json]` (event stream, NDJSON with `--json`).
+- **Inside Claude Code** (plugin): a status line and a band above the prompt while a swarm runs, toasts for failures/reassignments/deaths, and a `tazzyronth` pane with the agent table, the selected agent's feed and latest diff; paused/stopped shows in the band and status line, with a toast on each change. `/tazzy-pane` reopens it. Built on `tazzy watch --json`.
+- **Web view**: read-only page on `127.0.0.1` (shows a PAUSED/STOPPED badge). Opens automatically from IDE terminals (VS Code, Cursor, Antigravity) or with `tui.open: "web"`; also `tazzy hub --web` or config `"web": true`. The URL (with token) is in `tazzy_start`'s `dashboard` field, or build it from `.tazzyronth/hub.json`: `http://127.0.0.1:<web>/?token=<token>`.
+- **Plain**: `tazzy status [-dir DIR]` (summary), `tazzy status --line` (one line for status bars; ends in `paused`/`stopped` when not running), `tazzy watch [--json]` (event stream, NDJSON with `--json`).
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `tazzy hub [-dir DIR] [-web]` | Run the hub in the foreground (normally auto-started by `tazzy mcp`). |
-| `tazzy mcp [-dir DIR] [-agent ID]` | stdio MCP server that hosts launch. |
+| `tazzy mcp [-dir DIR] [-agent ID]` | stdio MCP server that hosts launch. `-dir` defaults to `$TAZZY_PROJECT`, else the cwd; `-agent` to `$TAZZY_AGENT_ID` (set for hub-spawned workers). |
 | `tazzy tui`, `status`, `watch` | Dashboards, see above. |
 | `tazzy init [-y] [-dry-run] [-host LIST]` | Install host integrations. |
 | `tazzy hook report [-dir DIR] [-agent ID] [-enforce]` | Host hook entry point (activity reporting; `-enforce` denies edits to files another agent write-leases). |
 | `tazzy doctor [-dir DIR]` | Environment check; exits 1 on warnings. No network or LLM calls. |
 | `tazzy version` | Print the version. |
 
-MCP tools: `tazzy_start`, `tazzy_plan`, `tazzy_status`, `tazzy_control` (`cancel`, `spawn`, `retire`), `tazzy_join`, `tazzy_next`, `tazzy_progress`, `tazzy_done`, `tazzy_fail`, `tazzy_propose`, `tazzy_lease`, `tazzy_send`, `tazzy_wait`, `tazzy_board`. MCP prompts: `tazzy`, `tazzy-worker`.
+MCP tools: `tazzy_start`, `tazzy_plan`, `tazzy_status`, `tazzy_control` (`cancel`, `spawn`, `retire`, `pause`, `resume`, `stop`), `tazzy_join`, `tazzy_next`, `tazzy_progress`, `tazzy_done`, `tazzy_fail`, `tazzy_propose`, `tazzy_lease`, `tazzy_send`, `tazzy_wait`, `tazzy_board`. MCP prompts: `tazzy`, `tazzy-worker`.
+
+**Pause / resume / stop** (`tazzy_control` with no target, TUI `p`/`x`, hub RPC `swarm.control`): *paused* means `tazzy_next` hands out nothing (it returns `state: "paused"` and workers wait for a message) and the autoscaler spawns nothing, while claimed tasks keep running; *resume* goes back to running. *Stop* is final for the swarm: every task that hasn't ended is cancelled (claimed ones too), hub-spawned workers are retired, every agent gets a directive to stop and exit, and the lead is told; resume is refused, and the next `tazzy_start` runs again. Each change is broadcast to all agents, and `tazzy_status`/the snapshot carry `state` when it isn't running.
 
 ## Configuration
 
@@ -85,7 +89,7 @@ Optional, per project: `.tazzyronth/config.json`. Missing fields keep their defa
 {
   "max_agents": 5,              // hub-spawned workers alive at once
   "min_agents": 0,
-  "default_adapter": "",        // "" = match the lead's host (codex/gemini/claude), else claude
+  "default_adapter": "",        // "" = match the lead's host (codex/antigravity/gemini/claude), else claude
   "spawn_mode": "auto",         // auto | hub | host
   "isolation": "lease",         // lease | worktree (git 2.38+, project = repo top level with a commit)
   "timeouts": {
@@ -100,14 +104,14 @@ Optional, per project: `.tazzyronth/config.json`. Missing fields keep their defa
   "activity": { "ring": 500, "poll_s": 1, "sweep_s": 5 },
   "tui":      { "open": "auto" },    // auto | split | tab | window | web | none
   "web": false,
-  "adapters": {                      // merged by name over the built-ins claude, codex, gemini
+  "adapters": {                      // merged by name over the built-ins claude, codex, gemini, antigravity
     "mycli": { "cmd": ["mycli", "--prompt-file", "{prompt_file}", "--mcp", "{mcp_config}"],
                "env": { "MYCLI_AGENT": "{agent_id}" }, "stream": "" }
   }
 }
 ```
 
-Adapter placeholders: `{prompt}`, `{prompt_file}`, `{mcp_config}`, `{agent_id}`, `{workdir}`, `{project}`, `{tazzy}`. `stream` names the stdout decoder (`claude`, `codex`, `gemini`, or empty). Overriding a built-in replaces it wholesale, so keep `"stream"` if you redefine `claude`. (The file is plain JSON; the comments above are for illustration.)
+Adapter placeholders: `{prompt}`, `{prompt_file}`, `{mcp_config}`, `{agent_id}`, `{workdir}`, `{project}`, `{tazzy}`. `stream` names the stdout decoder (`claude`, `codex`, `gemini`, `antigravity`, or empty). Overriding a built-in replaces it wholesale, so keep `"stream"` if you redefine `claude`. (The file is plain JSON; the comments above are for illustration.)
 
 ## How it works
 
@@ -133,9 +137,11 @@ Every host starts its own `tazzy mcp` shim; the first one starts a hub for the p
 ## Limitations and unverified parts
 
 - **Codex and Gemini adapters and their stream decoders are unverified** (neither CLI was available during development). The Claude adapter matches `claude --help`; its decoder was written from the stream-json format, not checked against a live run. No end-to-end run with a real LLM swarm has been recorded yet.
-- Host integrations other than Claude Code were written from the hosts' docs and not tried live; how a skill receives the text after `/tazzy`, and the MCP client names of Antigravity/Cursor (they fall back to the `claude` worker adapter), are unverified. Gemini CLI was retired for free accounts in June 2026.
+- **Antigravity**: checked against `agy` 1.4.2 (its flags, the stream-json output the `antigravity` decoder reads, MCP client name `antigravity-client`, and `tazzy mcp` serving its tools under `agy`). A full hub-spawned `agy` worker run was not done. `agy` has no per-run MCP config flag, so its workers rely on the global entry and allow rule that `tazzy init` writes (`tazzy doctor` checks both). Headless `agy` also refuses shell commands unless you add `command(...)` allow rules. Antigravity starts MCP servers outside the project directory, so a `/tazzy` lead in Antigravity may pick the wrong project: pin it with `-dir` in the MCP entry if that happens.
+- The other non-Claude host integrations (Codex, Gemini CLI, Cursor) were written from the hosts' docs and not tried live. How a skill receives the text after `/tazzy` is unverified, and so is Cursor's MCP client name (its workers fall back to the `claude` adapter). Gemini CLI was retired for free accounts in June 2026.
+- Token counts for host-mode Claude Code sessions come from their transcripts (`transcript_path`), read when hooks fire (after tool calls, at subagent stop and at the end of a turn), so they can lag by up to one turn.
 - The Claude Code pane/band were checked with `claude plugin test`, not in a live session. The plugin's sync `PreToolUse` hook starts a `tazzy` process per tool call.
-- Not implemented: headless `tazzy run`, `replay`, `tazzy_control` pause/resume/stop/reprioritize, `tui.open: "inline"`, web view actions (read-only), budget enforcement from token usage, retry backoff, multi-machine hubs.
+- Not implemented: headless `tazzy run`, `replay`, `tazzy_control` reprioritize, `tui.open: "inline"`, web view actions (read-only), budget enforcement from token usage, retry backoff, multi-machine hubs.
 - Worktree mode needs the project to be the top level of a git repo with at least one commit; failed attempts are kept on `tazzy/<task>-failed-N` branches. Leftover branches are expected.
 
 See [`docs/PROGRESS.md`](docs/PROGRESS.md) for per-phase details and deviations from [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
@@ -147,7 +153,7 @@ go build ./... && go vet ./... && go test -count=1 ./...
 go generate ./assets      # regenerate the logo files from assets/logo.jfif
 ```
 
-Tests never start real LLM CLIs (the supervisor refuses `claude`/`codex`/`gemini` under `go test`); swarms are simulated with `test/sim` and `test/fakeagent`.
+Tests never start real LLM CLIs (the supervisor refuses `claude`/`codex`/`gemini`/`agy` under `go test`); swarms are simulated with `test/sim` and `test/fakeagent`.
 
 ## License
 

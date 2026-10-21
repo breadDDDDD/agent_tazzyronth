@@ -380,8 +380,8 @@ func (d *dataLoop) act(ctx context.Context, a Action) {
 		return
 	}
 	c := d.client()
-	if c == nil || a.Send == nil && a.Retire == "" && a.Agent == "" {
-		if a.Send != nil || a.Retire != "" {
+	if c == nil || a.Send == nil && a.Retire == "" && a.Control == "" && a.Agent == "" {
+		if a.Send != nil || a.Retire != "" || a.Control != "" {
 			d.send(ctx, func(m *Model) { m.Flash = "not connected to the hub" })
 		}
 		return
@@ -398,6 +398,14 @@ func (d *dataLoop) act(ctx context.Context, a Action) {
 			flash = "retired " + a.Retire
 			if err := c.Call(ctx, "agent.retire", hub.RetireParams{Agent: a.Retire, Reason: "retired from the dashboard"}, nil); err != nil {
 				flash = "retire failed: " + err.Error()
+			}
+		case a.Control != "":
+			var res hub.ControlResult
+			if err := c.Call(ctx, "swarm.control", hub.ControlParams{Action: a.Control, By: "human"}, &res); err != nil {
+				flash = a.Control + " failed: " + err.Error()
+			} else {
+				flash = "swarm " + res.State
+				d.send(ctx, func(m *Model) { m.Snap.State = res.State })
 			}
 		case a.Agent != "":
 			var acts []activity.Activity

@@ -98,6 +98,9 @@ func TestInitIdempotent(t *testing.T) {
 	write(t, filepath.Join(h, ".codex", "config.toml"), "model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n")
 	write(t, filepath.Join(h, ".gemini", "settings.json"), "\xef\xbb\xbf{\n  \"theme\": \"dark\",\n  \"mcpServers\": {\"other\": {\"command\": \"x\"}},\n  \"zeta\": [1, 2]\n}\n")
 	write(t, filepath.Join(h, ".claude.json"), `{"numStartups": 3, "mcpServers": {}}`)
+	// agy 1.4.2 leaves an empty mcp_config.json behind on first run.
+	write(t, filepath.Join(h, ".gemini", "config", "mcp_config.json"), "")
+	write(t, filepath.Join(h, ".gemini", "antigravity-cli", "settings.json"), `{"colorScheme": "terminal", "permissions": {"allow": ["command(git)"], "deny": []}}`)
 
 	hosts := Plan(e)
 	if got := names(hosts); !slices.Equal(got, Names()) {
@@ -164,6 +167,15 @@ func TestInitIdempotent(t *testing.T) {
 	for _, d := range []string{".gemini/antigravity-cli/skills", ".gemini/config/skills"} {
 		read(t, filepath.Join(h, d, "tazzy", "SKILL.md"))
 	}
+	// ... and the MCP allow rule appended to the CLI's own rules.
+	var perm struct {
+		ColorScheme string
+		Permissions struct{ Allow, Deny []string }
+	}
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(h, ".gemini", "antigravity-cli", "settings.json"))), &perm); err != nil ||
+		perm.ColorScheme != "terminal" || !slices.Equal(perm.Permissions.Allow, []string{"command(git)", "mcp(tazzyronth/*)"}) || perm.Permissions.Deny == nil {
+		t.Errorf("antigravity settings.json: %+v %v", perm, err)
+	}
 
 	// Cursor: stdio entry.
 	var cu struct {
@@ -224,5 +236,26 @@ func TestCodexHome(t *testing.T) {
 	applyAll(t, e, Plan(e))
 	if !strings.Contains(read(t, filepath.Join(alt, "config.toml")), "[mcp_servers.tazzyronth]") {
 		t.Error("CODEX_HOME ignored")
+	}
+}
+
+func TestMergeAllow(t *testing.T) {
+	for _, tc := range []struct{ old, want string }{
+		{"", "{\n  \"permissions\": {\n    \"allow\": [\n      \"r\"\n    ]\n  }\n}\n"},
+		{`{"a":1}`, "{\n  \"a\": 1,\n  \"permissions\": {\n    \"allow\": [\n      \"r\"\n    ]\n  }\n}\n"},
+		{`{"permissions":{"deny":["x"]}}`, "{\n  \"permissions\": {\n    \"deny\": [\n      \"x\"\n    ],\n    \"allow\": [\n      \"r\"\n    ]\n  }\n}\n"},
+	} {
+		got, changed, err := mergeAllow([]byte(tc.old), "r")
+		if err != nil || !changed || string(got) != tc.want {
+			t.Errorf("mergeAllow(%q) = %q %v %v", tc.old, got, changed, err)
+		}
+	}
+	if _, changed, err := mergeAllow([]byte(`{"permissions":{"allow":["r"]}}`), "r"); changed || err != nil {
+		t.Errorf("rule already there: changed=%v err=%v", changed, err)
+	}
+	for _, bad := range []string{`{"permissions":[]}`, `{"permissions":{"allow":"r"}}`, `[]`} {
+		if _, _, err := mergeAllow([]byte(bad), "r"); err == nil {
+			t.Errorf("%s: no error", bad)
+		}
 	}
 }

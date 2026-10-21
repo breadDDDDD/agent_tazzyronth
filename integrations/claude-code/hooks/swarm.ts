@@ -39,6 +39,8 @@ export function summary(snap: TazzySnapshot, feed: readonly TazzyActivity[]): st
   ]
   const blocked = count(tasks, 'blocked')
   const failed = count(tasks, 'failed')
+  if (snap.state === 'paused') parts.push('⏸ paused')
+  if (snap.state === 'stopped') parts.push('■ stopped')
   if (blocked) parts.push(`${blocked} blocked`)
   if (failed) parts.push(`${failed} failed`)
   const edit = lastEdit(feed)
@@ -96,6 +98,10 @@ export function changes(prev: TazzySnapshot | null, cur: TazzySnapshot): string[
     } else if (p.owner && p.owner !== t.owner && !TERMINAL.has(t.state)) {
       out.push(`↻ task ${t.id} reassigned from ${p.owner}${t.owner ? ' to ' + t.owner : ' (back to ready)'}`)
     }
+  }
+  const run = (s: TazzySnapshot): 'paused' | 'stopped' | 'running' => (s.state === 'paused' || s.state === 'stopped' ? s.state : 'running')
+  if (run(cur) !== run(prev)) {
+    out.push({ paused: '⏸ swarm paused', stopped: '■ swarm stopped', running: '▶ swarm resumed' }[run(cur)])
   }
   const tasks = cur.tasks ?? []
   const finished = (ts: TazzyTask[]) => ts.length > 0 && ts.every(t => TERMINAL.has(t.state))

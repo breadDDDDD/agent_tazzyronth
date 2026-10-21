@@ -85,6 +85,12 @@ func StatusLine(s hub.Snapshot, acts []activity.Activity) string {
 		agents += fmt.Sprint("/", s.Swarm.MaxAgents)
 	}
 	parts := []string{fmt.Sprintf("tazzy %s agents", agents), fmt.Sprintf("%d/%d tasks", done, len(s.Tasks))}
+	switch s.State {
+	case hub.RunPaused:
+		parts = append(parts, "paused")
+	case hub.RunStopped:
+		parts = append(parts, "stopped")
+	}
 	if blocked > 0 {
 		parts = append(parts, fmt.Sprintf("%d blocked", blocked))
 	}

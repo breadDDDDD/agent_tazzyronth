@@ -201,6 +201,25 @@ func TestFromHook(t *testing.T) {
 	if h.Activity.Kind != State || h.Activity.Summary != "subagent Explore stopped" {
 		t.Errorf("subagent: %+v", h.Activity)
 	}
+	if h.Transcript != "" {
+		t.Errorf("subagent stop without paths: transcript %q", h.Transcript)
+	}
+	h = FromHook([]byte(`{"session_id":"S","agent_id":"sub-2","hook_event_name":"SubagentStop","transcript_path":"/p/S.jsonl","agent_transcript_path":"/p/S/subagents/agent-sub-2.jsonl"}`))
+	if h.Transcript != "/p/S/subagents/agent-sub-2.jsonl" {
+		t.Errorf("subagent stop transcript: %q", h.Transcript)
+	}
+	h = FromHook([]byte(`{"session_id":"S","agent_id":"sub-2","hook_event_name":"PostToolUse","tool_name":"Read","transcript_path":"/p/S.jsonl"}`))
+	if h.Transcript != SubagentTranscript("/p/S.jsonl", "sub-2") {
+		t.Errorf("subagent tool transcript: %q", h.Transcript)
+	}
+	h = FromHook([]byte(`{"session_id":"S","hook_event_name":"Stop","transcript_path":"/p/S.jsonl"}`))
+	if h.Key != "S" || h.Transcript != "/p/S.jsonl" || h.Activity.Kind != "" {
+		t.Errorf("stop: %+v", h)
+	}
+	h = FromHook([]byte(`{"session_id":"S","hook_event_name":"PreToolUse","tool_name":"Read","transcript_path":"/p/S.jsonl"}`))
+	if h.Transcript != "" {
+		t.Errorf("pre tool use read the transcript: %q", h.Transcript)
+	}
 	if h := FromHook([]byte(`nope`)); h.Key != "" || h.Activity.Kind != "" {
 		t.Errorf("garbage: %+v", h)
 	}

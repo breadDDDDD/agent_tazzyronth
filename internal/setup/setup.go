@@ -171,6 +171,23 @@ func (p *planner) mcpJSON(path string, entry map[string]any) {
 	}
 }
 
+// allowJSON plans adding rule to permissions.allow in a JSON settings file.
+func (p *planner) allowJSON(path, rule string) {
+	old, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		p.fail(err)
+		return
+	}
+	data, changed, err := mergeAllow(old, rule)
+	if err != nil {
+		p.fail(fmt.Errorf("%s: %w (add %q to permissions.allow by hand)", path, err, rule))
+		return
+	}
+	if changed {
+		p.changes = append(p.changes, Change{Path: path, Data: data, Note: "allow " + rule})
+	}
+}
+
 func (p *planner) entry() map[string]any {
 	return map[string]any{"command": p.e.Exe, "args": []string{"mcp"}}
 }
@@ -247,12 +264,21 @@ func planGemini(e Env, p *planner) {
 	p.file(filepath.Join(e.Home, ".gemini", "commands", "tazzy.toml"), "/tazzy command", []byte(integrations.GeminiCommand))
 }
 
+// AntigravityAllow is the Antigravity CLI permission rule for the tazzyronth
+// tools: headless agy (hub-spawned workers) soft-denies MCP calls without one.
+const AntigravityAllow = "mcp(" + server + "/*)"
+
 func planAntigravity(e Env, p *planner) {
-	// One MCP config for the CLI and the IDE; skills dirs differ. Workflows
-	// (.agents/workflows) stop working on 2026-10-19, so none is written.
+	// One MCP config for the CLI and the IDE, also used by hub-spawned agy
+	// workers (agy has no per-run MCP config flag). The skill dirs differ:
+	// https://antigravity.google/docs/skills/. Workflows (.agents/workflows)
+	// stop working on 2026-10-19, so none is written.
 	p.mcpJSON(filepath.Join(e.Home, ".gemini", "config", "mcp_config.json"), p.entry())
 	p.skill(".gemini/antigravity-cli/skills")
 	p.skill(".gemini/config/skills")
+	// https://antigravity.google/docs/permissions?tab=cli (the IDE and the
+	// app keep permissions in their own settings UI).
+	p.allowJSON(filepath.Join(e.Home, ".gemini", "antigravity-cli", "settings.json"), AntigravityAllow)
 }
 
 func planCursor(e Env, p *planner) {

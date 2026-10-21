@@ -31,6 +31,12 @@ test('summary, toasts and line splitting', () => {
   expect(changes(done, done)).toEqual([])
   expect(changes(null, done)).toEqual([])
 
+  const paused = { ...s, state: 'paused' }
+  expect(summary(paused, [])).toBe('🕷 2/3 agents · 1/3 tasks · ⏸ paused · 1 blocked')
+  expect(changes(s, paused)).toEqual(['⏸ swarm paused'])
+  expect(changes(paused, { ...s, state: 'running' })).toEqual(['▶ swarm resumed'])
+  expect(summary({ ...s, state: 'stopped' }, [])).toContain('■ stopped')
+
   expect(leaveToast({ agent: 'w2', reason: 'exited: exit status 1' })).toBe('✖ agent w2 died (exited: exit status 1)')
   expect(leaveToast({ agent: 'w2', reason: 'retired' })).toBeUndefined()
   expect(splitLines('{"a":1}\r\n{"b"')).toEqual([['{"a":1}'], '{"b"'])

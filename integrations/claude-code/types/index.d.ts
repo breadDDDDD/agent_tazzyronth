@@ -17,6 +17,7 @@ export type TazzySnapshot = {
   agents: TazzyAgent[] | null
   tasks: TazzyTask[] | null
   swarm?: { spawn?: string; max_agents?: number }
+  state?: string // run state: "paused", "stopped", "running" or absent (running)
 }
 
 export type TazzyActivity = {

@@ -84,8 +84,56 @@ func mergeServer(old []byte, entry any) ([]byte, bool, error) {
 		}
 		top[i].val = object(append(servers, field{server, e}))
 	}
+	return indent(object(top))
+}
+
+// mergeAllow adds rule to permissions.allow (a list of strings) in the JSON
+// settings old (empty = new file), keeping everything else. A rule already
+// there means no change.
+func mergeAllow(old []byte, rule string) ([]byte, bool, error) {
+	old = bytes.TrimPrefix(old, []byte("\xef\xbb\xbf"))
+	var top []field
+	if len(bytes.TrimSpace(old)) > 0 {
+		var err error
+		if top, err = fields(old); err != nil {
+			return nil, false, err
+		}
+	}
+	r, _ := json.Marshal([]string{rule})
+	i := slicesIndex(top, "permissions")
+	if i < 0 {
+		top = append(top, field{"permissions", object([]field{{"allow", r}})})
+	} else {
+		perms, err := fields(top[i].val)
+		if err != nil {
+			return nil, false, errors.New("permissions: " + err.Error())
+		}
+		j := slicesIndex(perms, "allow")
+		if j < 0 {
+			perms = append(perms, field{"allow", r})
+		} else {
+			var allow []json.RawMessage
+			if err := json.Unmarshal(perms[j].val, &allow); err != nil {
+				return nil, false, errors.New("permissions.allow: not a list")
+			}
+			for _, a := range allow {
+				var s string
+				if json.Unmarshal(a, &s) == nil && s == rule {
+					return old, false, nil
+				}
+			}
+			q, _ := json.Marshal(rule)
+			perms[j].val, _ = json.Marshal(append(allow, q))
+		}
+		top[i].val = object(perms)
+	}
+	return indent(object(top))
+}
+
+// indent re-indents a merged config (2 spaces, trailing newline).
+func indent(b []byte) ([]byte, bool, error) {
 	var compact, out bytes.Buffer
-	if err := json.Compact(&compact, object(top)); err != nil {
+	if err := json.Compact(&compact, b); err != nil {
 		return nil, false, err
 	}
 	json.Indent(&out, compact.Bytes(), "", "  ")

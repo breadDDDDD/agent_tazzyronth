@@ -133,6 +133,24 @@ type (
 		Paths  []string `json:"paths,omitempty"`  // exact patterns; empty = all
 		Reason string   `json:"reason,omitempty"` // "expired" when the hub let it lapse
 	}
+	// ControlParams change the swarm's run state: pause stops new claims and
+	// spawns, resume undoes it, stop ends the swarm for good.
+	ControlParams struct {
+		Action string `json:"action"` // ActionPause, ActionResume or ActionStop
+		By     string `json:"by,omitempty"`
+	}
+)
+
+// Control actions and the run states they lead to. A state of "" (no control
+// event yet) is RunRunning.
+const (
+	ActionPause  = "pause"
+	ActionResume = "resume"
+	ActionStop   = "stop"
+
+	RunRunning = "running"
+	RunPaused  = "paused"
+	RunStopped = "stopped"
 )
 
 // Event types, one per mutating RPC method.
@@ -151,6 +169,7 @@ const (
 	evLease     = "lease.acquire"
 	evRelease   = "lease.release"
 	evSwarm     = "swarm.set"
+	evControl   = "swarm.control"
 )
 
 // state is everything the hub knows. It changes only through apply, which is
@@ -166,7 +185,8 @@ type state struct {
 	leases   *lease.Table
 	failedBy map[string][]string // task id -> agents that failed or gave it up
 	swarm    SwarmParams
-	spawned  int // hub-spawned workers ever registered, for the spawn budget
+	run      string // RunPaused, RunStopped, RunRunning or "" (running)
+	spawned  int    // hub-spawned workers ever registered, for the spawn budget
 }
 
 func newState(root string) *state {
@@ -218,7 +238,30 @@ func (s *state) apply(ev store.Event) (any, error) {
 		}
 		p.Integration = cmp.Or(p.Integration, s.swarm.Integration)
 		s.swarm = p
+		if s.run == RunStopped {
+			s.run = "" // a new swarm (tazzy_start) runs again
+		}
 		return p, nil
+
+	case evControl:
+		p, err := decode[ControlParams](ev.Data)
+		if err != nil {
+			return nil, err
+		}
+		if s.run == RunStopped {
+			return nil, fmt.Errorf("swarm is stopped: can't %s it (start a new swarm instead)", p.Action)
+		}
+		switch p.Action {
+		case ActionPause:
+			s.run = RunPaused
+		case ActionResume:
+			s.run = RunRunning
+		case ActionStop:
+			s.run = RunStopped
+		default:
+			return nil, fmt.Errorf("action must be %q, %q or %q, got %q", ActionPause, ActionResume, ActionStop, p.Action)
+		}
+		return ControlResult{State: s.runState()}, nil
 
 	case evLeave:
 		p, err := decode[LeaveParams](ev.Data)
@@ -433,6 +476,17 @@ func (s *state) apply(ev store.Event) (any, error) {
 	}
 	return nil, fmt.Errorf("unknown event type %q", ev.Type)
 }
+
+// ControlResult is swarm.control's result: the run state it led to.
+type ControlResult struct {
+	State string `json:"state"`
+}
+
+// runState is the run state, with "" reported as RunRunning.
+func (s *state) runState() string { return cmp.Or(s.run, RunRunning) }
+
+// running reports whether workers may claim tasks and the hub may spawn.
+func (s *state) running() bool { return s.runState() == RunRunning }
 
 func active(st graph.State) bool {
 	return st == graph.Claimed || st == graph.Running || st == graph.Blocked
@@ -652,6 +706,7 @@ type Snapshot struct {
 	Decisions    []board.Decision         `json:"decisions"`
 	Leases       []lease.Lease            `json:"leases"`
 	Swarm        SwarmParams              `json:"swarm"`
+	State        string                   `json:"state,omitempty"` // run state: RunPaused, RunStopped, RunRunning or "" (running)
 	Usage        *activity.Totals         `json:"usage,omitempty"` // tokens and cost (status only)
 }
 
@@ -665,6 +720,7 @@ func (s *state) snapshot() Snapshot {
 		Decisions:    s.board.Decisions(),
 		Leases:       s.leases.List(),
 		Swarm:        s.swarm,
+		State:        s.run,
 	}
 }
 

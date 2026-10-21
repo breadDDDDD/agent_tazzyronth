@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -24,8 +25,12 @@ const (
 
 func runMCP(args []string) int {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	dir := fs.String("dir", ".", "project directory; the hub's state lives in <dir>/.tazzyronth")
-	agent := fs.String("agent", "", "agent id the hub pre-registered for this worker (set in hub-spawned workers' MCP configs)")
+	// Hosts without a per-run MCP config flag (Antigravity) start the global
+	// "tazzy mcp" entry for hub-spawned workers too, in a directory of their
+	// own choosing: the worker's environment then names the project and the
+	// agent (the supervisor sets TAZZY_AGENT_ID, the adapter TAZZY_PROJECT).
+	dir := fs.String("dir", cmp.Or(os.Getenv("TAZZY_PROJECT"), "."), "project directory; the hub's state lives in <dir>/.tazzyronth (default $TAZZY_PROJECT, else .)")
+	agent := fs.String("agent", os.Getenv("TAZZY_AGENT_ID"), "agent id the hub pre-registered for this worker (set in hub-spawned workers' MCP configs; default $TAZZY_AGENT_ID)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -34,14 +39,34 @@ func runMCP(args []string) int {
 		fmt.Fprintln(os.Stderr, "tazzy mcp:", err)
 		return 1
 	}
+	explicit := os.Getenv("TAZZY_PROJECT") != ""
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "dir" })
 	// stdout carries the protocol; everything else goes to stderr.
 	logger := log.New(os.Stderr, "tazzy mcp: ", log.LstdFlags)
-	connect := func(ctx context.Context) (*hub.Client, error) { return connectOrStart(ctx, abs, logger) }
-	srv := mcp.New(connect, version, logger)
+	// project is the project dir. Without -dir or $TAZZY_PROJECT the cwd may
+	// be the host's choice rather than the project (Antigravity starts MCP
+	// servers in the plugin dir), so ask the client for its MCP roots and
+	// fall back to the cwd.
+	var srv *mcp.Server
+	project := func(ctx context.Context) string {
+		if explicit {
+			return abs
+		}
+		d, err := filepath.Abs(srv.Dir(ctx))
+		if err != nil {
+			return abs
+		}
+		return d
+	}
+	connect := func(ctx context.Context) (*hub.Client, error) { return connectOrStart(ctx, project(ctx), logger) }
+	srv = mcp.New(connect, version, logger)
+	if !explicit {
+		srv.UseRoots(abs)
+	}
 	if *agent != "" {
 		srv.SetAgent(*agent)
 	} else {
-		srv.SetLauncher(func() string { return openDashboard(abs, launch.System()) })
+		srv.SetLauncher(func() string { return openDashboard(project(context.Background()), launch.System()) })
 	}
 	// Serve blocks reading stdin, which a dead host may leave open: exit
 	// with the host so its hub connection closes and the hub can idle out.

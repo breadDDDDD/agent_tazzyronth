@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -293,8 +296,8 @@ func TestSwarm(t *testing.T) {
 	if counts["done"] != 1.0 || counts["cancelled"] != 1.0 {
 		t.Errorf("status counts: %v", counts)
 	}
-	if res, _, isErr := lead.call("tazzy_control", map[string]any{"action": "pause"}); !isErr {
-		t.Errorf("pause should be an unknown action: %v", res)
+	if res, _, isErr := lead.call("tazzy_control", map[string]any{"action": "halt"}); !isErr {
+		t.Errorf("halt should be an unknown action: %v", res)
 	}
 }
 
@@ -314,5 +317,131 @@ func TestReconnect(t *testing.T) {
 	defer h.Close()
 	if res, _ := c.mustCall("tazzy_status", map[string]any{}); len(res["agents"].([]any)) != 1 {
 		t.Errorf("after restart: %v", res)
+	}
+}
+
+// fileURI makes a file:// URI for a local path, the way a client would.
+func fileURI(p string) string {
+	p = filepath.ToSlash(p)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // C:/x -> /C:/x
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String()
+}
+
+func TestRootsProjectDir(t *testing.T) {
+	project := t.TempDir()
+	srv := New(noHub, "test", nil)
+	srv.UseRoots("fallback")
+	c := serverClient(t, srv)
+
+	c.request("initialize", map[string]any{
+		"protocolVersion": "2025-06-18",
+		"capabilities":    map[string]any{"roots": map[string]any{"listChanged": true}},
+	})
+	c.notify("notifications/initialized")
+
+	req, err := c.r.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !req.IsRequest() || req.Method != "roots/list" {
+		t.Fatalf("server sent %+v, want a roots/list request", req)
+	}
+	resp, _ := proto.NewResult(req.ID, map[string]any{"roots": []map[string]string{
+		{"uri": "https://example.com/not-a-dir"},
+		{"uri": fileURI(project), "name": "project"},
+		{"uri": fileURI(t.TempDir())},
+	}})
+	c.w.Write(resp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if got := srv.Dir(ctx); got != filepath.Clean(project) {
+		t.Errorf("Dir = %q, want %q", got, project)
+	}
+	// The server keeps serving afterwards.
+	if resp := c.request("ping", nil); resp.Error != nil {
+		t.Errorf("ping: %+v", resp)
+	}
+}
+
+func TestRootsFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	t.Run("no roots capability", func(t *testing.T) {
+		srv := New(noHub, "test", nil)
+		srv.UseRoots("fallback")
+		c := serverClient(t, srv)
+		c.request("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}})
+		c.notify("notifications/initialized")
+		if got := srv.Dir(ctx); got != "fallback" {
+			t.Errorf("Dir = %q, want the fallback", got)
+		}
+		if resp := c.request("ping", nil); resp.Error != nil { // no roots/list was sent before this
+			t.Errorf("ping: %+v", resp)
+		}
+	})
+
+	t.Run("roots/list error", func(t *testing.T) {
+		srv := New(noHub, "test", nil)
+		srv.UseRoots("fallback")
+		c := serverClient(t, srv)
+		c.request("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"roots": map[string]any{}}})
+		c.notify("notifications/initialized")
+		req, err := c.r.Read()
+		if err != nil || req.Method != "roots/list" {
+			t.Fatalf("read %+v, %v; want roots/list", req, err)
+		}
+		c.w.Write(proto.NewError(req.ID, &proto.Error{Code: proto.CodeMethodNotFound, Message: "no roots"}))
+		if got := srv.Dir(ctx); got != "fallback" {
+			t.Errorf("Dir = %q, want the fallback", got)
+		}
+	})
+
+	t.Run("without UseRoots", func(t *testing.T) {
+		if got := New(noHub, "test", nil).Dir(ctx); got != "" {
+			t.Errorf("Dir = %q, want empty", got)
+		}
+	})
+}
+
+func TestFileURIPath(t *testing.T) {
+	cases := []struct {
+		uri, want string
+		ok        bool
+	}{
+		{"file:///home/me/proj", "/home/me/proj", true},
+		{"file://localhost/home/me/proj", "/home/me/proj", true},
+		{"file:///home/me/my%20proj/", "/home/me/my proj", true},
+		{"https://example.com/x", "", false},
+		{"file://", "", false},
+	}
+	if runtime.GOOS == "windows" {
+		cases = append(cases[:0],
+			struct {
+				uri, want string
+				ok        bool
+			}{"file:///C:/Users/me/proj", `C:\Users\me\proj`, true},
+			struct {
+				uri, want string
+				ok        bool
+			}{"file:///c%3A/Users/me/my%20proj", `c:\Users\me\my proj`, true},
+			struct {
+				uri, want string
+				ok        bool
+			}{"file://server/share/proj", `\\server\share\proj`, true},
+			struct {
+				uri, want string
+				ok        bool
+			}{"https://example.com/x", "", false},
+		)
+	}
+	for _, tc := range cases {
+		got, ok := fileURIPath(tc.uri)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("fileURIPath(%q) = %q, %v; want %q, %v", tc.uri, got, ok, tc.want, tc.ok)
+		}
 	}
 }

@@ -28,6 +28,7 @@ type Server struct {
 	version string
 	log     *log.Logger
 	s       *session
+	roots   *roots // set by UseRoots
 }
 
 // New returns a server that reaches the hub through connect. connect is
@@ -58,6 +59,11 @@ func (srv *Server) SetLauncher(f func() string) { srv.s.launch = f }
 // others, nor pings and cancellation.
 func (srv *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	in, out := proto.NewReader(r), proto.NewWriter(w)
+	if srv.roots != nil {
+		srv.roots.mu.Lock()
+		srv.roots.out = out
+		srv.roots.mu.Unlock()
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	var (
 		mu       sync.Mutex
@@ -83,8 +89,18 @@ func (srv *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 		switch {
 		case m.IsResponse():
-			continue // we never send requests
+			if srv.roots != nil {
+				srv.roots.response(m) // our only requests: roots/list
+			}
+			continue
 		case m.IsNotification():
+			if m.Method == "notifications/initialized" && srv.roots != nil {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					srv.roots.ask(ctx, srv.log.Printf)
+				}()
+			}
 			if m.Method == "notifications/cancelled" {
 				var p struct {
 					RequestID json.RawMessage `json:"requestId"`
@@ -143,8 +159,12 @@ func (srv *Server) handle(ctx context.Context, m *proto.Message) (any, error) {
 			ClientInfo      struct {
 				Name string `json:"name"`
 			} `json:"clientInfo"`
+			Capabilities json.RawMessage `json:"capabilities"`
 		}
 		json.Unmarshal(m.Params, &p)
+		if srv.roots != nil {
+			srv.roots.initialized(p.Capabilities)
+		}
 		srv.s.mu.Lock()
 		srv.s.client = p.ClientInfo.Name
 		srv.s.mu.Unlock()

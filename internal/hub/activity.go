@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"tazzyronth/internal/activity"
@@ -258,7 +259,6 @@ func activityHook(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	}
 	hk := activity.FromHook(p.Payload)
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	agent := cmp.Or(p.Agent, hk.Agent)
 	if agent != "" && hk.Key != "" {
 		h.hookIDs[hk.Key] = agent
@@ -269,18 +269,89 @@ func activityHook(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	if agent == "" && hk.Key != "" {
 		agent = "host-" + hk.Key[:min(8, len(hk.Key))]
 	}
-	if agent == "" || hk.Activity.Kind == "" {
-		return HookResult{Agent: agent}, nil
+	res := HookResult{Agent: agent}
+	if agent == "" {
+		h.mu.Unlock()
+		return res, nil
 	}
+	// A hub-spawned worker whose stream is decoded already (activity and
+	// tokens): its hooks are just a heartbeat.
+	streamed := false
 	if a := h.st.agents[agent]; a != nil && h.cfg.Adapters[a.Adapter].Stream != "" {
-		// A hub-spawned worker whose stream is decoded already: just a heartbeat.
+		streamed = true
 		h.seen[agent] = time.Now()
 		delete(h.pinged, agent)
-		return HookResult{Agent: agent}, nil
+	} else if hk.Activity.Kind != "" {
+		hk.Activity.Agent = agent
+		h.recordLocked(hk.Activity)
+		res.Recorded = true
 	}
-	hk.Activity.Agent = agent
-	h.recordLocked(hk.Activity)
-	return HookResult{Agent: agent, Recorded: true}, nil
+	h.mu.Unlock()
+	if !streamed && hk.Transcript != "" {
+		h.transcriptUsage(agent, hk.Transcript)
+	}
+	return res, nil
+}
+
+// hookTranscripts holds each hub's transcript readers (*Hub -> *transcripts).
+var hookTranscripts sync.Map
+
+// transcripts tracks how far each host transcript has been tallied.
+type transcripts struct {
+	mu sync.Mutex
+	m  map[string]*activity.Transcript // path -> reader
+}
+
+// transcriptUsage records the token usage appended to a host session's
+// transcript since it was last read, for agent (board decision TOKENS: host
+// sessions report no usage in their hook payloads). Hub-spawned workers are
+// counted from their streams instead and never come here. A path seen for
+// the first time since the hub started resumes from the offset its last
+// usage event recorded, so a restart does not count a transcript twice.
+func (h *Hub) transcriptUsage(agent, path string) {
+	if h.act == nil {
+		return
+	}
+	v, _ := hookTranscripts.LoadOrStore(h, &transcripts{m: map[string]*activity.Transcript{}})
+	ts := v.(*transcripts)
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	tr := ts.m[path]
+	if tr == nil {
+		tr = &activity.Transcript{Offset: h.transcriptOffset(path)}
+		ts.m[path] = tr
+	}
+	u, err := tr.Read(path)
+	if err != nil || u.Total() == 0 {
+		return
+	}
+	d, _ := json.Marshal(transcriptMark{Path: path, Offset: tr.Offset})
+	h.record(activity.Activity{Agent: agent, Kind: activity.Usage, Source: activity.SrcHook,
+		Summary: fmt.Sprintf("%d tokens", u.Total()), Detail: d, Usage: &u})
+}
+
+// transcriptMark is the Detail of a usage event read from a transcript.
+type transcriptMark struct {
+	Path   string `json:"transcript"`
+	Offset int64  `json:"offset"`
+}
+
+// transcriptOffset is the offset the latest remembered usage event read path
+// up to, or 0. Any agent's events count: the hook identity may have been
+// bound to another name before a restart.
+func (h *Hub) transcriptOffset(path string) int64 {
+	rec := h.act.Recent("", 0, 0)
+	for i := len(rec) - 1; i >= 0; i-- {
+		a := rec[i]
+		if a.Kind != activity.Usage || a.Source != activity.SrcHook {
+			continue
+		}
+		var m transcriptMark
+		if json.Unmarshal(a.Detail, &m) == nil && m.Path == path {
+			return m.Offset
+		}
+	}
+	return 0
 }
 
 // status is the full snapshot plus the usage tally.

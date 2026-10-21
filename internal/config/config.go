@@ -49,7 +49,7 @@ type Adapter struct {
 	Cmd []string          `json:"cmd"`
 	Env map[string]string `json:"env,omitempty"`
 	// Stream is the format of the JSON event stream the worker prints on
-	// stdout (activity.Formats: claude, codex, gemini); "" = none.
+	// stdout (activity.Formats: claude, codex, gemini, antigravity); "" = none.
 	Stream string `json:"stream,omitempty"`
 }
 
@@ -135,6 +135,19 @@ var builtins = map[string]Adapter{
 		"--allowed-mcp-server-names", "tazzyronth"},
 		Env:    map[string]string{"GEMINI_CLI_SYSTEM_SETTINGS_PATH": "{mcp_config}"},
 		Stream: "gemini"},
+	// Verified against agy 1.4.2 (`agy --help`, a real -p run): agy has no
+	// per-run MCP config flag, so the worker uses the global "tazzyronth"
+	// entry `tazzy init` writes (~/.gemini/config/mcp_config.json); that
+	// `tazzy mcp` takes the project and agent from TAZZY_PROJECT and
+	// TAZZY_AGENT_ID. Headless agy soft-denies MCP calls without an
+	// mcp(tazzyronth/*) allow rule (also written by init) and shell commands
+	// unless allowed in ~/.gemini/antigravity-cli/settings.json.
+	"antigravity": {Cmd: []string{"agy", "-p", "{prompt}",
+		"--output-format", "stream-json",
+		"--mode", "accept-edits",
+		"--print-timeout", "0s"},
+		Env:    map[string]string{"TAZZY_PROJECT": "{project}"},
+		Stream: "antigravity"},
 }
 
 // Default returns the configuration used when there is no config file.
@@ -224,7 +237,7 @@ func (c Config) WorkerAdapter(explicit, client string) string {
 		return a
 	}
 	client = strings.ToLower(client)
-	for _, name := range []string{"codex", "gemini", "claude"} {
+	for _, name := range []string{"codex", "antigravity", "gemini", "claude"} {
 		if _, ok := c.Adapters[name]; ok && strings.Contains(client, name) {
 			return name
 		}

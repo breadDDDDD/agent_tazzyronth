@@ -87,11 +87,12 @@ type input struct {
 
 // Action is what the terminal loop must do after a key.
 type Action struct {
-	Quit   bool
-	Send   *hub.SendParams
-	Retire string
-	Agent  string // fetch this agent's full recent activity
-	Attach string // switch to the hub for this project directory
+	Quit    bool
+	Send    *hub.SendParams
+	Retire  string
+	Control string // swarm.control action: hub.ActionPause, ActionResume or ActionStop
+	Agent   string // fetch this agent's full recent activity
+	Attach  string // switch to the hub for this project directory
 }
 
 // NewModel returns an empty model on the overview.
@@ -435,6 +436,11 @@ func (m *Model) Key(k string) Action {
 	case "u":
 		m.setView(vUsage)
 		return Action{}
+	case "p":
+		return m.togglePause()
+	case "x":
+		m.askStop()
+		return Action{}
 	}
 	switch m.view {
 	case vOverview:
@@ -617,6 +623,37 @@ func (m *Model) askRetire(id string) {
 	}
 	m.input = &input{label: "retire " + id + "? its task is requeued [y/N]", confirm: true, submit: func(*Model, string) Action {
 		return Action{Retire: id}
+	}}
+}
+
+// runState is the swarm's run state: hub.RunRunning, RunPaused or RunStopped.
+func (m *Model) runState() string {
+	if m.Snap.State == "" {
+		return hub.RunRunning
+	}
+	return m.Snap.State
+}
+
+// togglePause pauses a running swarm or resumes a paused one.
+func (m *Model) togglePause() Action {
+	switch m.runState() {
+	case hub.RunStopped:
+		m.Flash = "the swarm is stopped"
+		return Action{}
+	case hub.RunPaused:
+		return Action{Control: hub.ActionResume}
+	}
+	return Action{Control: hub.ActionPause}
+}
+
+// askStop confirms, then stops the swarm for good.
+func (m *Model) askStop() {
+	if m.runState() == hub.RunStopped {
+		m.Flash = "the swarm is already stopped"
+		return
+	}
+	m.input = &input{label: "stop the swarm? every open task is cancelled and workers exit [y/N]", confirm: true, submit: func(*Model, string) Action {
+		return Action{Control: hub.ActionStop}
 	}}
 }
 

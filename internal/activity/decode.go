@@ -22,6 +22,7 @@ var Formats = map[string]func() decoder{
 	"claude": func() decoder { return &claudeDecoder{calls: map[string]toolCall{}, msgs: map[string]bool{}} },
 	"codex":  func() decoder { return &codexDecoder{} },
 	"gemini": func() decoder { return &geminiDecoder{calls: map[string]toolCall{}} },
+	"antigravity": func() decoder { return &antigravityDecoder{calls: map[int]toolCall{}} },
 }
 
 // Decode reads a worker's stdout in the given format until EOF and calls

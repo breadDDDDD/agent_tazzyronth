@@ -93,7 +93,7 @@ func (h *Hub) scale(now time.Time) {
 	}
 
 	desired := 0
-	if h.spawnMode() == config.SpawnHub {
+	if h.spawnMode() == config.SpawnHub && h.st.running() { // paused or stopped: spawn nothing
 		desired = min(max(busy+h.st.width(), h.cfg.MinAgents), h.maxAgents())
 	}
 	n := len(live)
@@ -156,6 +156,9 @@ func (h *Hub) spawnLocked(adapter string) (Agent, error) {
 	a, ok := h.cfg.Adapters[name]
 	if !ok {
 		return Agent{}, fmt.Errorf("unknown adapter %q", name)
+	}
+	if h.st.run == RunStopped {
+		return Agent{}, errors.New("swarm is stopped")
 	}
 	if h.st.spawned >= h.cfg.Budget.MaxTotalSpawns {
 		return Agent{}, fmt.Errorf("spawn budget exhausted (%d workers)", h.cfg.Budget.MaxTotalSpawns)

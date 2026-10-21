@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -184,6 +185,20 @@ func doctor(w io.Writer, dir string) int {
 		default:
 			info("claude plugin", "not installed (run `tazzy init` if you use Claude Code)")
 		}
+
+		// Antigravity workers use the global MCP entry and need the allow rule.
+		if slices.Contains(found, "antigravity") {
+			if missing := agyWorkerSetup(home); len(missing) == 0 {
+				info("agy workers", "MCP entry and %s allow rule in place", setup.AntigravityAllow)
+			} else {
+				msg := "missing " + strings.Join(missing, " and ") + ": run `tazzy init -host antigravity`"
+				if worker == "antigravity" {
+					report(false, "agy workers", "%s", msg)
+				} else {
+					info("agy workers", "%s", msg)
+				}
+			}
+		}
 	}
 
 	fmt.Fprintln(w)
@@ -195,7 +210,31 @@ func doctor(w io.Writer, dir string) int {
 	return 1
 }
 
-var gitVersionRE = regexp.MustCompile(`(\d+)\.(\d+)`)
+// agyWorkerSetup lists what a hub-spawned agy worker lacks under home: agy
+// has no per-run MCP config flag, so it needs the global tazzyronth entry,
+// and headless it soft-denies MCP calls without the allow rule.
+func agyWorkerSetup(home string) []string {
+	var missing []string
+	var mcpCfg struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	b, _ := os.ReadFile(filepath.Join(home, ".gemini", "config", "mcp_config.json"))
+	if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &mcpCfg) != nil || mcpCfg.MCPServers["tazzyronth"] == nil {
+		missing = append(missing, "the tazzyronth server in ~/.gemini/config/mcp_config.json")
+	}
+	var settings struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	b, _ = os.ReadFile(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"))
+	if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &settings) != nil || !slices.Contains(settings.Permissions.Allow, setup.AntigravityAllow) {
+		missing = append(missing, setup.AntigravityAllow+" in ~/.gemini/antigravity-cli/settings.json")
+	}
+	return missing
+}
+
+var gitVersionRE =regexp.MustCompile(`(\d+)\.(\d+)`)
 
 // gitAtLeast reports whether "git version X.Y..." is at least major.minor.
 func gitAtLeast(s string, major, minor int) bool {

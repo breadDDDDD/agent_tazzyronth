@@ -224,7 +224,7 @@ func (s *Supervisor) Close() {
 // run, which tests must never launch (they cost money and touch the repo).
 func realCLI(cmd string) bool {
 	name := strings.ToLower(strings.TrimSuffix(filepath.Base(cmd), filepath.Ext(cmd)))
-	return name == "claude" || name == "codex" || name == "gemini"
+	return name == "claude" || name == "codex" || name == "gemini" || name == "agy" || name == "antigravity"
 }
 
 // Has reports whether agent's worker process (killed or not) has yet to exit.

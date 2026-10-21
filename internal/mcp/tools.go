@@ -93,8 +93,8 @@ var tools = []tool{
 	},
 	{
 		Name:        "tazzy_control",
-		Description: "Lead control. cancel: target = task id. spawn: start a hub-managed worker (target = adapter, optional). retire: remove an agent and stop its process (target = agent id); its task goes back to ready.",
-		InputSchema: agentSchema(`"action":{"type":"string","enum":["cancel","spawn","retire"]},"target":{"type":"string"}`, "action"),
+		Description: "Lead control. cancel: target = task id. spawn: start a hub-managed worker (target = adapter, optional). retire: remove an agent and stop its process (target = agent id); its task goes back to ready. pause: hand out no new tasks and spawn no workers (running tasks go on); resume: undo pause. stop: end the swarm for good: every unfinished task is cancelled and workers are told to exit. pause, resume and stop take no target and return the swarm's state.",
+		InputSchema: agentSchema(`"action":{"type":"string","enum":["cancel","spawn","retire","pause","resume","stop"]},"target":{"type":"string"}`, "action"),
 		run:         control,
 	},
 	{
@@ -369,11 +369,15 @@ func status(ctx context.Context, s *session, raw json.RawMessage) (any, error) {
 	if u := snap.Usage; u != nil && u.Swarm.Total() > 0 {
 		out["usage"] = fmt.Sprintf("%d tokens, ~$%.2f", u.Swarm.Total(), u.Swarm.CostUSD)
 	}
+	if snap.State != "" && snap.State != hub.RunRunning {
+		out["state"] = snap.State // paused or stopped
+	}
 	return out, nil
 }
 
 func control(ctx context.Context, s *session, raw json.RawMessage) (any, error) {
-	if _, err := s.me(ctx); err != nil {
+	me, err := s.me(ctx)
+	if err != nil {
 		return nil, err
 	}
 	p, err := decodeArgs[struct{ Action, Target string }](raw)
@@ -396,8 +400,14 @@ func control(ctx context.Context, s *session, raw json.RawMessage) (any, error) 
 			return nil, err
 		}
 		return map[string]string{"retired": p.Target}, nil
+	case hub.ActionPause, hub.ActionResume, hub.ActionStop:
+		var r hub.ControlResult
+		if err := s.call(ctx, "swarm.control", hub.ControlParams{Action: p.Action, By: me}, &r); err != nil {
+			return nil, err
+		}
+		return map[string]string{"state": r.State}, nil
 	default:
-		return nil, fmt.Errorf("unknown action %q (cancel, spawn or retire)", p.Action)
+		return nil, fmt.Errorf("unknown action %q (cancel, spawn, retire, pause, resume or stop)", p.Action)
 	}
 	var t graph.Task
 	if err := s.call(ctx, "task.state", hub.TaskStateParams{ID: p.Target, State: graph.Cancelled}, &t); err != nil {
@@ -414,6 +424,17 @@ func next(ctx context.Context, s *session, raw json.RawMessage) (any, error) {
 	p, err := decodeArgs[struct{ Wait float64 }](raw)
 	if err != nil {
 		return nil, err
+	}
+	// Paused or stopped: the hub hands out nothing, so don't wait for it.
+	var snap hub.Snapshot
+	if err := s.call(ctx, "status", nil, &snap); err != nil {
+		return nil, err
+	}
+	switch snap.State {
+	case hub.RunPaused:
+		return map[string]any{"task": nil, "state": snap.State, "note": `swarm paused by the lead: tazzy_wait(until="msg") and try again`}, nil
+	case hub.RunStopped:
+		return map[string]any{"task": nil, "state": snap.State, "note": "swarm stopped: release your leases and exit now (return a one-line summary); do not call tazzy_next again"}, nil
 	}
 	// The hub scores and claims in one step (sched.next).
 	var claimed *hub.TaskStateResult

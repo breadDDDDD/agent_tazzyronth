@@ -15,6 +15,9 @@
     ],
     "SubagentStop": [
       { "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report"], "async": true }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "tazzy", "args": ["hook", "report"], "async": true }] }
     ]
   }
 }

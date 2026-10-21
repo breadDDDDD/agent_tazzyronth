@@ -93,6 +93,9 @@ func TestAuth(t *testing.T) {
 	if len(page) > 25<<10 {
 		t.Errorf("page is %d bytes", len(page))
 	}
+	if !strings.Contains(string(page), `id="run"`) || !strings.Contains(string(page), "snap.state") {
+		t.Error("page lacks the paused/stopped badge")
+	}
 	if r := get(t, base+"/logo.png", withCookie); r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/png" {
 		t.Errorf("logo: %d %s", r.StatusCode, r.Header.Get("Content-Type"))
 	}

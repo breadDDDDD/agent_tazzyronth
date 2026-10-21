@@ -51,6 +51,7 @@ func TestWorkerAdapter(t *testing.T) {
 	cases := []struct{ explicit, def, client, want string }{
 		{"", "", "codex-mcp-client", "codex"},
 		{"", "", "gemini-cli-mcp-client", "gemini"},
+		{"", "", "antigravity-client", "antigravity"}, // agy 1.4.2's clientInfo.name
 		{"", "", "claude-code", "claude"},
 		{"", "", "cursor-vscode", FallbackAdapter}, // no adapter for this host
 		{"", "", "", FallbackAdapter},

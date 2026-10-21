@@ -358,3 +358,43 @@ func TestOfflineHubPicker(t *testing.T) {
 		t.Fatal("q should quit while offline")
 	}
 }
+
+func TestPauseStop(t *testing.T) {
+	m := fixture(false)
+	if a := m.Key("p"); a.Control != hub.ActionPause {
+		t.Fatalf("p on a running swarm = %+v", a)
+	}
+	frame := strings.Join(Render(m, 160, 40), "\n")
+	if !strings.Contains(frame, "[p] pause") || !strings.Contains(frame, "[x] stop") {
+		t.Errorf("footer lacks pause/stop keys:\n%s", frame)
+	}
+	m.Snap.State = hub.RunPaused
+	if a := m.Key("p"); a.Control != hub.ActionResume {
+		t.Errorf("p on a paused swarm = %+v", a)
+	}
+	if frame := strings.Join(Render(m, 160, 40), "\n"); !strings.Contains(frame, "PAUSED") || !strings.Contains(frame, "[p] resume") {
+		t.Errorf("paused frame lacks badge or resume key:\n%s", frame)
+	}
+	m.Key("x")
+	if a := m.Key("n"); a.Control != "" {
+		t.Error("stop without confirmation")
+	}
+	m.Key("x")
+	if a := m.Key("y"); a.Control != hub.ActionStop {
+		t.Errorf("stop = %+v", a)
+	}
+	m.Snap.State = hub.RunStopped
+	if !strings.Contains(strings.Join(Render(m, 160, 40), "\n"), "STOPPED") {
+		t.Error("no STOPPED badge")
+	}
+	if a := m.Key("p"); a.Control != "" || m.Flash == "" {
+		t.Errorf("p on a stopped swarm = %+v, flash %q", a, m.Flash)
+	}
+	m.Key("x")
+	if m.input != nil {
+		t.Error("x on a stopped swarm should not ask")
+	}
+	if l := StatusLine(m.Snap, nil); !strings.Contains(l, "stopped") {
+		t.Errorf("status line = %q", l)
+	}
+}

@@ -646,6 +646,7 @@ var methods = map[string]method{
 	"lease.list":      query(leaseList),
 	"sched.next":      schedNext,
 	evSwarm:           swarmSet,
+	evControl:         swarmControl,
 	"agent.spawn":     agentSpawn,
 	"agent.retire":    agentRetire,
 	"agent.prune":     agentPrune,
@@ -696,7 +697,7 @@ func send(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 
 // schedNext scores the ready tasks for an agent and claims the best one in a
 // single step, so two agents can't be handed the same task. Result: the
-// claimed task, or null if nothing fits.
+// claimed task, or null if nothing fits or the swarm is paused or stopped.
 func schedNext(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	p, err := decodeParams[AgentParams](raw)
 	if err != nil {
@@ -704,6 +705,9 @@ func schedNext(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if !h.st.running() {
+		return nil, nil
+	}
 	if _, _, err := h.integrationLocked(); err != nil {
 		return nil, err
 	}
@@ -720,6 +724,83 @@ func schedNext(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// swarmControl pauses, resumes or stops the swarm and tells every agent.
+// Stopping also cancels every task that hasn't ended (dependents first, so
+// none fails by cascade), retires the hub-spawned workers and notifies the
+// lead.
+func swarmControl(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
+	p, err := decodeParams[ControlParams](raw)
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	res, err := h.mutateLocked(evControl, p)
+	if err != nil {
+		return nil, err
+	}
+	switch p.Action {
+	case ActionPause:
+		h.broadcastLocked("info", "swarm paused: finish your current task, but no new ones will be handed out until it is resumed")
+	case ActionResume:
+		h.broadcastLocked("info", "swarm resumed")
+	case ActionStop:
+		by := cmp.Or(p.By, "the lead")
+		h.broadcastLocked("directive", "swarm stopped by "+by+": stop work now, release leases, exit")
+		cancelled := h.cancelAllLocked()
+		for _, a := range h.st.agentList() {
+			if a.Adapter == "" {
+				continue
+			}
+			if err := h.retireLocked(a.ID, "swarm stopped"); err != nil {
+				fmt.Fprintf(os.Stderr, "tazzy hub: retire %s: %v\n", a.ID, err)
+			}
+		}
+		body := "swarm stopped by " + by
+		if len(cancelled) > 0 {
+			body += "; cancelled: " + strings.Join(cancelled, ", ")
+		}
+		h.notifyLeadLocked(body)
+	}
+	return res, nil
+}
+
+// cancelAllLocked cancels every task that hasn't ended, dependents before
+// their deps so none of them fails by cascade instead. It returns their ids.
+// Called with h.mu held.
+func (h *Hub) cancelAllLocked() []string {
+	heights := h.st.graph.Heights()
+	var open []graph.Task
+	for _, t := range h.st.graph.List() {
+		if t.State != graph.Done && t.State != graph.Failed && t.State != graph.Cancelled {
+			open = append(open, t)
+		}
+	}
+	slices.SortStableFunc(open, func(x, y graph.Task) int { return heights[x.ID] - heights[y.ID] })
+	out := []string{}
+	for _, t := range open {
+		if _, err := h.mutateLocked(evTaskState, TaskStateParams{ID: t.ID, State: graph.Cancelled}); err != nil {
+			fmt.Fprintf(os.Stderr, "tazzy hub: cancel %s: %v\n", t.ID, err)
+			continue
+		}
+		if active(t.State) {
+			h.abandonLocked(t.Owner, t)
+		}
+		out = append(out, t.ID)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// broadcastLocked sends every agent a message from the hub. Called with h.mu
+// held.
+func (h *Hub) broadcastLocked(kind, body string) {
+	_, err := h.mutateLocked(evSend, SendParams{From: hubSender, To: "broadcast", Kind: kind, Body: body})
+	if err != nil && !errors.Is(err, bus.ErrNoRecipients) {
+		fmt.Fprintf(os.Stderr, "tazzy hub: broadcast: %v\n", err)
+	}
 }
 
 func leaseCheck(s *state, p LeaseCheckParams) (any, error) {
