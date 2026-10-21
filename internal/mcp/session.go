@@ -65,6 +65,9 @@ func (s *session) hub(ctx context.Context) (*hub.Client, error) {
 		return c, nil
 	}
 	c, err := s.connect(ctx)
+	if np := (*NoProjectError)(nil); errors.As(err, &np) {
+		return nil, np // already says what to do; "hub unavailable" would mislead
+	}
 	if err != nil {
 		return nil, fmt.Errorf("hub unavailable: %w", err)
 	}

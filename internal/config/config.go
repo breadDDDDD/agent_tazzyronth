@@ -72,6 +72,7 @@ type Timeouts struct {
 	Stall         float64 `json:"stall_s"`          // an agent holding work that is silent this long is pinged
 	StallGrace    float64 `json:"stall_grace_s"`    // ... and treated as dead if still silent this long after the ping
 	FinishGrace   float64 `json:"finish_grace_s"`   // once every task has ended for this long, the workers are released
+	QuickExit     float64 `json:"quick_exit_s"`     // a hub-spawned worker that dies within this long of its spawn died quickly (crash guard)
 }
 
 // Retries is the failure policy (plan §3.7).
@@ -82,6 +83,9 @@ type Retries struct {
 
 type Budget struct {
 	MaxTotalSpawns int `json:"max_total_spawns"` // over the whole swarm, including replays
+	// MaxQuickExits is how many hub-spawned workers in a row may die within
+	// quick_exit_s of starting before the hub pauses the swarm; 0 = never.
+	MaxQuickExits int `json:"max_quick_exits"`
 }
 
 type Config struct {
@@ -155,7 +159,8 @@ var builtins = map[string]Adapter{
 		// One denied action ends a headless agy run at once (agy 1.4.2).
 		Note: "You run headless: any action not on the allow list ends your run at once and loses your work. " +
 			"Inspect and edit files only with your file tools (list, read, write, edit), never shell commands like Get-ChildItem, Test-Path, cat or ls. " +
-			"Run a shell command only when the task spec names it (e.g. go test) and it is expected to be allowed."},
+			"Run a shell command only when the task spec names it (e.g. go test) and it is expected to be allowed; " +
+			"do not run code to check your work (e.g. python -c, node -e) unless the spec names that command."},
 }
 
 // Default returns the configuration used when there is no config file.
@@ -164,8 +169,8 @@ func Default() Config {
 		MaxAgents: 5,
 		SpawnMode: SpawnAuto,
 		Isolation: IsolationLease,
-		Timeouts:  Timeouts{IdleRetire: 90, SpawnCooldown: 5, ScaleTick: 2, HubIdle: 30, Stall: 300, StallGrace: 60, FinishGrace: 30},
-		Budget:    Budget{MaxTotalSpawns: 20},
+		Timeouts:  Timeouts{IdleRetire: 90, SpawnCooldown: 5, ScaleTick: 2, HubIdle: 30, Stall: 300, StallGrace: 60, FinishGrace: 30, QuickExit: 60},
+		Budget:    Budget{MaxTotalSpawns: 20, MaxQuickExits: 3},
 		Retries:   Retries{MaxAttempts: 3, EscalateAfter: 2},
 		Scheduler: Scheduler{Weights: sched.Defaults},
 		Activity:  Activity{Ring: 500, Poll: 1, Sweep: 5},
@@ -220,6 +225,8 @@ func (c Config) validate() error {
 		return errors.New("timeouts.finish_grace_s must not be negative")
 	case c.Activity.Ring < 1 || c.Activity.Poll <= 0 || c.Activity.Sweep < 0:
 		return errors.New("activity: ring must be at least 1, poll_s positive and sweep_s not negative")
+	case c.Timeouts.QuickExit < 0 || c.Budget.MaxQuickExits < 0:
+		return errors.New("timeouts.quick_exit_s and budget.max_quick_exits must not be negative")
 	case c.Retries.MaxAttempts < 1:
 		return errors.New("retries.max_attempts must be at least 1")
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"tazzyronth/internal/activity"
 	"tazzyronth/internal/config"
 	"tazzyronth/internal/graph"
 	"tazzyronth/internal/supervisor"
@@ -96,8 +97,9 @@ func (h *Hub) scale(now time.Time) {
 	if h.spawnMode() == config.SpawnHub && h.st.running() { // paused or stopped: spawn nothing
 		desired = min(max(busy+h.st.width(), h.cfg.MinAgents), h.maxAgents())
 	}
+	h.survivorsLocked(now)
 	n := len(live)
-	if n < desired && now.Sub(h.lastSpawn) >= config.Seconds(h.cfg.Timeouts.SpawnCooldown) &&
+	if n < desired && now.Sub(h.lastSpawn) >= h.spawnCooldownLocked() &&
 		h.st.spawned < h.cfg.Budget.MaxTotalSpawns {
 		if _, err := h.spawnLocked(""); err != nil {
 			fmt.Fprintf(os.Stderr, "tazzy hub: spawn: %v\n", err)
@@ -189,7 +191,74 @@ func (h *Hub) spawnLocked(adapter string) (Agent, error) {
 		return Agent{}, err
 	}
 	h.idleSince[ag.ID] = time.Now()
+	h.spawnedAt[ag.ID] = time.Now()
 	return ag, nil
+}
+
+// maxCooldown caps the crash guard's spawn backoff.
+const maxCooldown = 60 * time.Second
+
+// spawnCooldownLocked is the gap between automatic spawns: spawn_cooldown_s,
+// doubled for each consecutive quick death, capped at a minute (or at
+// spawn_cooldown_s if that is longer). Called with h.mu held.
+func (h *Hub) spawnCooldownLocked() time.Duration {
+	d := config.Seconds(h.cfg.Timeouts.SpawnCooldown)
+	limit := max(d, maxCooldown)
+	for i := 0; i < h.quickDeaths && d < limit; i++ {
+		d *= 2
+	}
+	return min(d, limit)
+}
+
+// survivorsLocked resets the quick-death count once a hub-spawned worker
+// has lived past quick_exit_s or another task got done. Called with h.mu
+// held.
+func (h *Hub) survivorsLocked(now time.Time) {
+	for id, at := range h.spawnedAt {
+		if now.Sub(at) >= config.Seconds(h.cfg.Timeouts.QuickExit) {
+			delete(h.spawnedAt, id)
+			h.quickDeaths = 0
+		}
+	}
+	done := 0
+	for _, t := range h.st.graph.List() {
+		if t.State == graph.Done {
+			done++
+		}
+	}
+	if done > h.doneSeen {
+		h.quickDeaths = 0
+	}
+	h.doneSeen = done
+}
+
+// quickDeathLocked counts a hub-spawned worker that died within
+// quick_exit_s of its spawn. After max_quick_exits in a row the hub pauses
+// the swarm (logged like a lead's pause) and tells the lead once, naming the
+// worker's latest alert (e.g. a quota error) or else its exit error, so a
+// broken CLI isn't respawned until the spawn budget runs out. Called with
+// h.mu held.
+func (h *Hub) quickDeathLocked(agent, exit string) {
+	h.quickDeaths++
+	limit := h.cfg.Budget.MaxQuickExits
+	if limit <= 0 || h.quickDeaths < limit || !h.st.running() {
+		return
+	}
+	reason := exit
+	if h.act != nil {
+		rec := h.act.Recent(agent, 0, 0)
+		for i := len(rec) - 1; i >= 0; i-- {
+			if rec[i].Kind == activity.Alert && rec[i].Summary != "" {
+				reason = rec[i].Summary
+				break
+			}
+		}
+	}
+	if _, err := h.controlLocked(ControlParams{Action: ActionPause, By: hubSender}); err != nil {
+		fmt.Fprintf(os.Stderr, "tazzy hub: crash guard pause: %v\n", err)
+		return
+	}
+	h.notifyLeadLocked(fmt.Sprintf("workers keep dying right after start (%d in a row; last: %s): swarm paused. Fix the cause, then tazzy_control resume.", h.quickDeaths, reason))
 }
 
 // retireLocked removes an agent (requeueing any task it holds) and kills its
@@ -236,6 +305,8 @@ func (h *Hub) workerExited(agent string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.idleSince, agent)
+	spawned, young := h.spawnedAt[agent]
+	delete(h.spawnedAt, agent)
 	if h.closed {
 		return
 	}
@@ -249,6 +320,11 @@ func (h *Hub) workerExited(agent string, err error) {
 	}
 	if _, err := h.leaveLocked(agent, reason); err != nil {
 		fmt.Fprintf(os.Stderr, "tazzy hub: %s exited: %v\n", agent, err)
+	}
+	if young && time.Since(spawned) < config.Seconds(h.cfg.Timeouts.QuickExit) {
+		h.quickDeathLocked(agent, reason)
+	} else {
+		h.quickDeaths = 0 // it lived past quick_exit_s
 	}
 }
 

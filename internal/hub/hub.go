@@ -104,16 +104,23 @@ type Hub struct {
 	pinged    map[string]time.Time // agent -> when the stall ping went out, until it is heard from
 	idleSince map[string]time.Time // hub-spawned worker -> when it last had no task
 	lastSpawn time.Time
-	doneFrom  time.Time // since when every task has ended (zero while work remains)
-	quietFrom time.Time // since when no host has been connected (workers' connections don't count)
-	closed    bool
-	act       *activity.Store
-	watch     *diff.Watcher                 // snapshots of write-leased files
-	hookIDs   map[string]string             // host hook identity -> agent (plan §3.9 identity binding)
-	denied    map[string]bool               // hub-spawned workers whose denial the lead was told about
-	taps      map[chan store.Event]struct{} // in-process subscribers (the web view)
-	web       *web.Server
-	repo      *worktree.Repo // worktree isolation, once used
+	// Crash guard (board decision CRASH GUARD): spawnedAt holds hub-spawned
+	// workers still within quick_exit_s of their spawn; quickDeaths counts
+	// the consecutive ones that died in that window; doneSeen is how many
+	// tasks were done at the last scale tick (a newly done task resets it).
+	spawnedAt   map[string]time.Time
+	quickDeaths int
+	doneSeen    int
+	doneFrom    time.Time // since when every task has ended (zero while work remains)
+	quietFrom   time.Time // since when no host has been connected (workers' connections don't count)
+	closed      bool
+	act         *activity.Store
+	watch       *diff.Watcher                 // snapshots of write-leased files
+	hookIDs     map[string]string             // host hook identity -> agent (plan §3.9 identity binding)
+	denied      map[string]bool               // hub-spawned workers whose denial the lead was told about
+	taps        map[chan store.Event]struct{} // in-process subscribers (the web view)
+	web         *web.Server
+	repo        *worktree.Repo // worktree isolation, once used
 }
 
 // Options tune Start. Zero values mean defaults.
@@ -202,6 +209,7 @@ func StartWith(projectDir string, opt Options) (*Hub, error) {
 		seen:        map[string]time.Time{},
 		pinged:      map[string]time.Time{},
 		idleSince:   map[string]time.Time{},
+		spawnedAt:   map[string]time.Time{},
 		quietFrom:   time.Now(),
 		act:         act,
 		watch:       diff.NewWatcher(root),
@@ -743,6 +751,12 @@ func swarmControl(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.controlLocked(p)
+}
+
+// controlLocked is swarmControl's work, also used by the hub itself (the
+// crash guard's pause). Called with h.mu held.
+func (h *Hub) controlLocked(p ControlParams) (any, error) {
 	res, err := h.mutateLocked(evControl, p)
 	if err != nil {
 		return nil, err
@@ -751,6 +765,7 @@ func swarmControl(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	case ActionPause:
 		h.broadcastLocked("info", "swarm paused: finish your current task, but no new ones will be handed out until it is resumed")
 	case ActionResume:
+		h.quickDeaths = 0
 		h.broadcastLocked("info", "swarm resumed")
 	case ActionStop:
 		by := cmp.Or(p.By, "the lead")

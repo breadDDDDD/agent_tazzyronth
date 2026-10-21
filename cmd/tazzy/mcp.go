@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tazzyronth/internal/config"
+	"tazzyronth/internal/diff"
 	"tazzyronth/internal/hub"
 	"tazzyronth/internal/launch"
 	"tazzyronth/internal/mcp"
@@ -43,31 +44,9 @@ func runMCP(args []string) int {
 	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "dir" })
 	// stdout carries the protocol; everything else goes to stderr.
 	logger := log.New(os.Stderr, "tazzy mcp: ", log.LstdFlags)
-	// project is the project dir. Without -dir or $TAZZY_PROJECT the cwd may
-	// be the host's choice rather than the project (Antigravity starts MCP
-	// servers in the plugin dir), so ask the client for its MCP roots and
-	// fall back to the cwd.
-	var srv *mcp.Server
-	project := func(ctx context.Context) string {
-		if explicit {
-			return abs
-		}
-		d, err := filepath.Abs(srv.Dir(ctx))
-		if err != nil {
-			return abs
-		}
-		return d
-	}
-	connect := func(ctx context.Context) (*hub.Client, error) { return connectOrStart(ctx, project(ctx), logger) }
-	srv = mcp.New(connect, version, logger)
-	if !explicit {
-		srv.UseRoots(abs)
-	}
-	if *agent != "" {
-		srv.SetAgent(*agent)
-	} else {
-		srv.SetLauncher(func() string { return openDashboard(project(context.Background()), launch.System()) })
-	}
+	start := func(ctx context.Context, dir string) (*hub.Client, error) { return connectOrStart(ctx, dir, logger) }
+	open := func(dir string) string { return openDashboard(dir, launch.System()) }
+	srv := newShim(abs, explicit, *agent, logger, start, open)
 	// Serve blocks reading stdin, which a dead host may leave open: exit
 	// with the host so its hub connection closes and the hub can idle out.
 	go func() {
@@ -80,6 +59,73 @@ func runMCP(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// newShim builds the MCP server of "tazzy mcp". abs is -dir (explicit: given
+// by -dir or $TAZZY_PROJECT), else the cwd; start connects to dir's hub,
+// starting it if needed; open opens the dashboard for dir.
+func newShim(abs string, explicit bool, agent string, logger *log.Logger,
+	start func(ctx context.Context, dir string) (*hub.Client, error), open func(dir string) string) *mcp.Server {
+	// project is the project dir. Without -dir or $TAZZY_PROJECT the cwd may
+	// be the host's choice rather than the project (Antigravity starts MCP
+	// servers in the plugin dir, or its install dir), so ask the client for
+	// its MCP roots and fall back to the cwd. fallback reports that last case.
+	var srv *mcp.Server
+	project := func(ctx context.Context) (dir string, fallback bool) {
+		if explicit {
+			return abs, false
+		}
+		d, client := srv.DirSource(ctx)
+		if d, err := filepath.Abs(d); err == nil {
+			return d, !client
+		}
+		return abs, true
+	}
+	connect := func(ctx context.Context) (*hub.Client, error) {
+		dir, fallback := project(ctx)
+		// A cwd nobody named is only trusted if it looks like a project:
+		// otherwise the hub would litter whatever folder the host started
+		// us in (an app's install dir) with .tazzyronth and the swarm's files.
+		if fallback && !isProject(dir) {
+			return nil, &mcp.NoProjectError{Dir: dir}
+		}
+		return start(ctx, dir)
+	}
+	srv = mcp.New(connect, version, logger)
+	if !explicit {
+		srv.UseRoots(abs)
+	}
+	if agent != "" {
+		srv.SetAgent(agent)
+	} else {
+		// Runs only after a tazzy_start that reached the hub, so never for a
+		// refused dir.
+		srv.SetLauncher(func() string {
+			dir, _ := project(context.Background())
+			return open(dir)
+		})
+	}
+	return srv
+}
+
+// isProject reports whether dir is inside a git work tree or already holds
+// a .tazzyronth dir: what a cwd fallback must be to be used as the project.
+func isProject(dir string) bool {
+	if fi, err := os.Stat(hub.StateDir(dir)); err == nil && fi.IsDir() {
+		return true
+	}
+	for d := dir; ; {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return true // a dir, or a worktree's .git file
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			break
+		}
+		d = up
+	}
+	_, ok := diff.GitPrefix(dir) // $GIT_DIR and other setups the walk misses
+	return ok
 }
 
 // connectOrStart connects to the project's hub, starting a detached

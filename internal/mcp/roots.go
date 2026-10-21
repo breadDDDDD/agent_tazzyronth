@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ type roots struct {
 
 	mu     sync.Mutex
 	dir    string // settled project dir
+	client bool   // dir came from the client's roots, not the fallback
 	has    bool   // the client advertised the roots capability
 	out    *proto.Writer
 	calls  map[string]chan *proto.Message // our requests awaiting a response, by id
@@ -45,9 +47,16 @@ func (srv *Server) UseRoots(fallback string) {
 // Dir returns the project dir found through the client's roots, waiting
 // until it is known (at most rootsTimeout). Without UseRoots it returns "".
 func (srv *Server) Dir(ctx context.Context) string {
+	d, _ := srv.DirSource(ctx)
+	return d
+}
+
+// DirSource is Dir that also reports whether the dir came from a file://
+// root of the client (true) or is the fallback (false).
+func (srv *Server) DirSource(ctx context.Context) (string, bool) {
 	r := srv.roots
 	if r == nil {
-		return ""
+		return "", false
 	}
 	t := time.NewTimer(rootsTimeout)
 	defer t.Stop()
@@ -55,23 +64,24 @@ func (srv *Server) Dir(ctx context.Context) string {
 	case <-r.set:
 	case <-t.C:
 		srv.log.Printf("no roots from the client within %s; using %s", rootsTimeout, r.fallback)
-		r.settle(r.fallback)
+		r.settle(r.fallback, false)
 	case <-ctx.Done():
-		return r.fallback // unsettled: a later call may still learn the roots
+		return r.fallback, false // unsettled: a later call may still learn the roots
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.dir
+	return r.dir, r.client
 }
 
-// settle fixes the project dir; only the first call counts.
-func (r *roots) settle(dir string) {
+// settle fixes the project dir; only the first call counts. client says it
+// came from the client's roots.
+func (r *roots) settle(dir string, client bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	select {
 	case <-r.set:
 	default:
-		r.dir = dir
+		r.dir, r.client = dir, client
 		close(r.set)
 	}
 }
@@ -88,7 +98,7 @@ func (r *roots) initialized(caps json.RawMessage) {
 	r.has = has
 	r.mu.Unlock()
 	if !has {
-		r.settle(r.fallback)
+		r.settle(r.fallback, false)
 	}
 }
 
@@ -116,8 +126,8 @@ func (r *roots) ask(ctx context.Context, logf func(string, ...any)) {
 	if !has {
 		return
 	}
-	dir := r.fallback
-	defer func() { r.settle(dir) }()
+	dir, client := r.fallback, false
+	defer func() { r.settle(dir, client) }()
 	req, err := proto.NewRequest(id, "roots/list", nil)
 	if err != nil || out == nil {
 		return
@@ -157,12 +167,23 @@ func (r *roots) ask(ctx context.Context, logf func(string, ...any)) {
 	json.Unmarshal(resp.Result, &res)
 	for _, root := range res.Roots {
 		if p, ok := fileURIPath(root.URI); ok {
-			dir = p
+			dir, client = p, true
 			logf("project dir from the client's roots: %s", dir)
 			return
 		}
 	}
 	logf("roots/list: no file:// root; using %s", dir)
+}
+
+// NoProjectError is what connect returns when the shim refuses its project
+// dir: the client reported no workspace root and the cwd it fell back to is
+// not a project (no git work tree, no .tazzyronth). Tool calls that need the
+// hub fail with its text, unwrapped, so the model can relay it.
+type NoProjectError struct{ Dir string }
+
+func (e *NoProjectError) Error() string {
+	return fmt.Sprintf("no project folder: the client reported no workspace root and %s is not a project (no git repo, no .tazzyronth). "+
+		"Open a folder in your editor, or add \"-dir\", \"<project>\" to the tazzyronth MCP server args.", e.Dir)
 }
 
 var winDrive = regexp.MustCompile(`^/[A-Za-z]:`)

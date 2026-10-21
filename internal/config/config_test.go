@@ -17,18 +17,20 @@ func write(t *testing.T, dir, s string) {
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	c, err := Load(dir)
-	if err != nil || c.MaxAgents != 5 || c.SpawnMode != SpawnAuto || c.Isolation != IsolationLease || len(c.Adapters["claude"].Cmd) == 0 {
+	if err != nil || c.MaxAgents != 5 || c.SpawnMode != SpawnAuto || c.Isolation != IsolationLease || len(c.Adapters["claude"].Cmd) == 0 ||
+		c.Timeouts.QuickExit != 60 || c.Budget.MaxQuickExits != 3 {
 		t.Fatalf("defaults: %+v, %v", c, err)
 	}
 
-	write(t, dir, `{"max_agents": 2, "timeouts": {"idle_retire_s": 0.5},
+	write(t, dir, `{"max_agents": 2, "timeouts": {"idle_retire_s": 0.5}, "budget": {"max_quick_exits": 0},
 		"scheduler": {"weights": {"conflict": 9}},
 		"adapters": {"mine": {"cmd": ["my-agent", "{prompt}"]}}}`)
 	c, err = Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.MaxAgents != 2 || c.Timeouts.IdleRetire != 0.5 || c.Timeouts.ScaleTick != 2 {
+	if c.MaxAgents != 2 || c.Timeouts.IdleRetire != 0.5 || c.Timeouts.ScaleTick != 2 ||
+		c.Budget.MaxQuickExits != 0 || c.Budget.MaxTotalSpawns != 20 || c.Timeouts.QuickExit != 60 {
 		t.Errorf("override/merge: %+v", c)
 	}
 	if w := c.Scheduler.Weights; w.Conflict != 9 || w.Priority != 3 {
@@ -38,7 +40,8 @@ func TestLoad(t *testing.T) {
 		t.Errorf("adapters: %v", c.Adapters)
 	}
 
-	for _, bad := range []string{`{"max_agents": 0}`, `{"min_agents": 9}`, `{"spawn_mode": "x"}`, `{"isolation": "x"}`, `{"adapters": {"e": {}}}`, `{`} {
+	for _, bad := range []string{`{"max_agents": 0}`, `{"min_agents": 9}`, `{"spawn_mode": "x"}`, `{"isolation": "x"}`, `{"adapters": {"e": {}}}`,
+		`{"timeouts": {"quick_exit_s": -1}}`, `{"budget": {"max_quick_exits": -1}}`, `{`} {
 		write(t, dir, bad)
 		if _, err := Load(dir); err == nil {
 			t.Errorf("%s: no error", bad)

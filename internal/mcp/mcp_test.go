@@ -357,8 +357,8 @@ func TestRootsProjectDir(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if got := srv.Dir(ctx); got != filepath.Clean(project) {
-		t.Errorf("Dir = %q, want %q", got, project)
+	if got, client := srv.DirSource(ctx); got != filepath.Clean(project) || !client {
+		t.Errorf("DirSource = %q %v, want %q from the client", got, client, project)
 	}
 	// The server keeps serving afterwards.
 	if resp := c.request("ping", nil); resp.Error != nil {
@@ -376,8 +376,8 @@ func TestRootsFallback(t *testing.T) {
 		c := serverClient(t, srv)
 		c.request("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}})
 		c.notify("notifications/initialized")
-		if got := srv.Dir(ctx); got != "fallback" {
-			t.Errorf("Dir = %q, want the fallback", got)
+		if got, client := srv.DirSource(ctx); got != "fallback" || client {
+			t.Errorf("DirSource = %q %v, want the fallback", got, client)
 		}
 		if resp := c.request("ping", nil); resp.Error != nil { // no roots/list was sent before this
 			t.Errorf("ping: %+v", resp)
@@ -405,6 +405,20 @@ func TestRootsFallback(t *testing.T) {
 			t.Errorf("Dir = %q, want empty", got)
 		}
 	})
+}
+
+// TestNoProjectError: a refused project dir reaches the model as a plain
+// tool error with the guard's own text, not "hub unavailable".
+func TestNoProjectError(t *testing.T) {
+	c := newClient(t, func(context.Context) (*hub.Client, error) { return nil, &NoProjectError{Dir: `C:\app`} })
+	c.request("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}})
+	for _, name := range []string{"tazzy_start", "tazzy_join"} {
+		res, _, isErr := c.call(name, map[string]any{"goal": "g"})
+		msg, _ := res["error"].(string)
+		if !isErr || !strings.HasPrefix(msg, `no project folder: the client reported no workspace root and C:\app is not a project`) {
+			t.Errorf("%s = %v (error %v)", name, res, isErr)
+		}
+	}
 }
 
 func TestFileURIPath(t *testing.T) {
