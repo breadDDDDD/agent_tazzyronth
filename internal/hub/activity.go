@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -216,10 +217,50 @@ func (h *Hub) streamTo(agent, format string) io.WriteCloser {
 		defer h.wg.Done()
 		activity.Decode(format, pr, func(a activity.Activity) {
 			a.Agent, a.Source = agent, activity.SrcStream
-			h.record(a)
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.recordLocked(a)
+			if a.Kind == activity.Alert && strings.HasPrefix(a.Summary, "denied") {
+				h.deniedLocked(agent, a)
+			}
 		})
 	}()
 	return pw
+}
+
+// deniedNotified holds, per hub, the hub-spawned workers whose permission
+// denial the lead was already told about (key deniedKey).
+var deniedNotified sync.Map
+
+type deniedKey struct {
+	h     *Hub
+	agent string
+}
+
+// deniedLocked tells the lead, once per agent, that a hub-spawned worker's
+// CLI refused an action for want of an allow rule, which ends a headless agy
+// run (board decision AGY DENIAL FIX). Only streamTo calls it, and only
+// hub-spawned workers have their streams decoded. Called with h.mu held.
+func (h *Hub) deniedLocked(agent string, a activity.Activity) {
+	if _, told := deniedNotified.LoadOrStore(deniedKey{h, agent}, true); told {
+		return
+	}
+	var d struct{ Denied []activity.AgyDenial }
+	json.Unmarshal(a.Detail, &d)
+	what := strings.TrimSpace(a.Summary[strings.Index(a.Summary, ":")+1:])
+	var rules []string
+	for _, x := range d.Denied {
+		if x.Action == "command" && x.Target != "" {
+			if r := "command(" + strings.Fields(x.Target)[0] + ")"; !slices.Contains(rules, r) {
+				rules = append(rules, r)
+			}
+		}
+	}
+	hint := "add an allow rule for it"
+	if len(rules) > 0 {
+		hint = "add " + strings.Join(rules, ", ")
+	}
+	h.notifyLeadLocked(fmt.Sprintf("%s stopped: agy denied %s; %s to permissions.allow in ~/.gemini/antigravity-cli/settings.json", agent, what, hint))
 }
 
 func activityList(h *Hub, _ *conn, raw json.RawMessage) (any, error) {

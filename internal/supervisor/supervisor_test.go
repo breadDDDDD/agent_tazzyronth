@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tazzyronth/internal/config"
+	"tazzyronth/playbooks"
 )
 
 // The test binary doubles as the worker: TAZZY_HELPER=parent starts a
@@ -125,7 +126,7 @@ func TestKillTree(t *testing.T) {
 }
 
 func TestPrompt(t *testing.T) {
-	p := Prompt("a7", "/proj", "ship it")
+	p := Prompt("a7", "/proj", "ship it", "")
 	for _, want := range []string{`agent="a7"`, "/proj", "ship it", "tazzy_next", "tazzy_lease", "tazzy_done", "tazzy_wait"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q", want)
@@ -133,6 +134,13 @@ func TestPrompt(t *testing.T) {
 	}
 	if strings.Contains(p, "{") {
 		t.Errorf("unexpanded placeholder in prompt:\n%s", p)
+	}
+	if !strings.HasSuffix(p, playbooks.Worker) {
+		t.Error("prompt without a note does not end with the playbook")
+	}
+	n := Prompt("a7", "/proj", "ship it", "Never run ls.")
+	if !strings.HasPrefix(n, p) || !strings.HasSuffix(n, "\nNever run ls.\n") {
+		t.Errorf("note not appended after the playbook:\n%s", n)
 	}
 }
 

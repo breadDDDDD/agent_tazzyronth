@@ -46,6 +46,25 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// TestNotes: only antigravity carries a prompt note; a user override of it
+// replaces the built-in whole, note included.
+func TestNotes(t *testing.T) {
+	for name, a := range Default().Adapters {
+		if (a.Note != "") != (name == "antigravity") {
+			t.Errorf("%s: note %q", name, a.Note)
+		}
+	}
+	dir := t.TempDir()
+	write(t, dir, `{"adapters": {"antigravity": {"cmd": ["agy", "-p", "{prompt}"]}, "mine": {"cmd": ["x"], "note": "be careful"}}}`)
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Adapters["antigravity"].Note != "" || c.Adapters["mine"].Note != "be careful" {
+		t.Errorf("notes after override: %+v", c.Adapters)
+	}
+}
+
 func TestWorkerAdapter(t *testing.T) {
 	c := Default()
 	cases := []struct{ explicit, def, client, want string }{

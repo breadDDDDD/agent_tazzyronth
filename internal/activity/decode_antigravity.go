@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -26,6 +27,21 @@ type antigravityDecoder struct {
 	calls map[int]toolCall
 	text  strings.Builder
 	seen  agyUsage // sum of the step usages emitted so far
+	// denied: what the run's permission-denied tool steps tried, in order,
+	// deduped; named in the denial alert (board decision AGY DENIAL FIX).
+	denied []AgyDenial
+}
+
+// AgyDenial is one action headless agy refused for want of an allow rule:
+// Action "command" with the CommandLine as Target, or the tool's name as
+// Action. The denial Alert's Detail is {"denied":[AgyDenial...]}.
+type AgyDenial struct {
+	Action string `json:"action"`
+	Target string `json:"target,omitempty"`
+}
+
+func (x AgyDenial) String() string {
+	return strings.TrimSpace(x.Action + " " + x.Target)
 }
 
 type agyUsage struct {
@@ -107,11 +123,18 @@ func (d *antigravityDecoder) line(b []byte, emit func(Activity)) {
 			emit(Activity{Kind: Alert, Summary: "error: " + OneLine(text(r.Error), 200)})
 		}
 		if len(r.Denied) > 0 {
-			acts := make([]string, 0, len(r.Denied))
-			for _, x := range r.Denied {
-				acts = append(acts, x.Action)
+			denied := d.denied
+			if len(denied) == 0 { // no denied step seen: name the actions
+				for _, x := range r.Denied {
+					denied = appendDenial(denied, AgyDenial{Action: x.Action})
+				}
 			}
-			emit(Activity{Kind: Alert, Summary: "denied (headless, no allow rule): " + strings.Join(acts, ", ")})
+			names := make([]string, len(denied))
+			for i, x := range denied {
+				names[i] = x.String()
+			}
+			dt, _ := json.Marshal(map[string]any{"denied": denied})
+			emit(Activity{Kind: Alert, Summary: "denied (headless, no allow rule): " + OneLine(strings.Join(names, ", "), 200), Detail: dt})
 		}
 		a := Activity{Kind: State, Summary: "run " + strings.ToLower(r.Status)}
 		if u := r.Usage; u != nil {
@@ -143,6 +166,9 @@ func (d *antigravityDecoder) tool(idx int, state string, info agyToolInfo, emit 
 	}
 	delete(d.calls, idx)
 	failed := state == "ERROR" || info.Error != nil
+	if failed && info.Error != nil && isAgyDenial(info.Error.Message) {
+		d.denied = appendDenial(d.denied, agyDenial(info))
+	}
 	out := text(info.Output)
 	if info.Error != nil {
 		out = info.Error.Message
@@ -150,6 +176,39 @@ func (d *antigravityDecoder) tool(idx int, state string, info agyToolInfo, emit 
 	if a, ok := resultActivity(call, failed, out); ok {
 		emit(a)
 	}
+}
+
+// isAgyDenial reports whether a tool error is agy's permission denial
+// ("permission check failed for ...: user denied permission to ...").
+func isAgyDenial(msg string) bool {
+	return strings.Contains(msg, "permission check failed") || strings.Contains(msg, "denied permission")
+}
+
+// agyDenial names a denied tool step: its command line (truncated), else
+// the tool and its file.
+func agyDenial(info agyToolInfo) AgyDenial {
+	a := agyToolActivity(info.Name, info.Parameters)
+	if a.Kind == Cmd {
+		var in struct{ CommandLine, Command string }
+		json.Unmarshal(info.Parameters, &in)
+		if c := cmp.Or(in.CommandLine, in.Command); c != "" {
+			return AgyDenial{Action: "command", Target: OneLine(c, 80)}
+		}
+		return AgyDenial{Action: "command"}
+	}
+	if len(a.Files) > 0 {
+		return AgyDenial{Action: info.Name, Target: a.Files[0]}
+	}
+	return AgyDenial{Action: info.Name}
+}
+
+func appendDenial(ds []AgyDenial, x AgyDenial) []AgyDenial {
+	for _, y := range ds {
+		if y == x {
+			return ds
+		}
+	}
+	return append(ds, x)
 }
 
 // agyToolActivity maps an Antigravity tool call. Its parameters are

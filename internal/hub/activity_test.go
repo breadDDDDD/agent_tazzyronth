@@ -298,3 +298,53 @@ func TestHookTranscriptUsage(t *testing.T) {
 		t.Fatalf("after restart: %+v", got)
 	}
 }
+
+// TestStreamDenialNotifiesLead: a hub-spawned agy worker whose action was
+// denied (headless, no allow rule) gets the lead one message naming what was
+// denied and the allow rule to add, however many denials it reports.
+func TestStreamDenialNotifiesLead(t *testing.T) {
+	h, _, call := actHub(t, t.TempDir(), 0)
+	call("agent.join", JoinParams{ID: "lead", Role: "lead"}, nil)
+	call("agent.join", JoinParams{ID: "w1", Adapter: "antigravity"}, nil)
+	for range 2 {
+		w := h.streamTo("w1", "antigravity")
+		fmt.Fprintln(w, `{"event":"step_update","step_update":{"step_index":20,"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"Get-ChildItem -Force"},"error":{"type":"TOOL_ERROR","message":"permission check failed for unsandboxed \"Get-ChildItem -Force\": user denied permission to run command"}}}}`)
+		fmt.Fprintln(w, `{"event":"result","result":{"status":"SUCCESS","response":"","denied_actions":[{"action":"command","display_name":"RunCommand"}]}}`)
+		w.Close()
+	}
+	// Both runs are decoded (each ends in a "run success" state).
+	deadline := time.Now().Add(5 * time.Second)
+	for n := 0; n < 2; {
+		var as []activity.Activity
+		call("activity.list", ActivityListParams{Agent: "w1", Limit: 500}, &as)
+		n = 0
+		for _, a := range as {
+			if a.Kind == activity.State && a.Source == activity.SrcStream {
+				n++
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runs decoded = %d, want 2", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	waitActivity(t, call, "w1", func(a activity.Activity) bool {
+		return a.Kind == activity.Alert && a.Summary == "denied (headless, no allow rule): command Get-ChildItem -Force"
+	})
+	deadline = time.Now().Add(5 * time.Second)
+	var msgs []string
+	for {
+		msgs = msgs[:0]
+		for _, m := range leadInbox(t, call) {
+			msgs = append(msgs, m.Body)
+		}
+		if len(msgs) > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	want := "w1 stopped: agy denied command Get-ChildItem -Force; add command(Get-ChildItem) to permissions.allow in ~/.gemini/antigravity-cli/settings.json"
+	if !slices.Equal(msgs, []string{want}) {
+		t.Errorf("lead inbox = %q", msgs)
+	}
+}

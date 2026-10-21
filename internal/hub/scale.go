@@ -182,7 +182,7 @@ func (h *Hub) spawnLocked(adapter string) (Agent, error) {
 		workdir, err = repo.Ensure(ag.ID, integ)
 	}
 	if err == nil {
-		err = h.sup.Spawn(ag.ID, a, supervisor.Prompt(ag.ID, cmp.Or(workdir, h.st.root), goal), workdir)
+		err = h.sup.Spawn(ag.ID, a, supervisor.Prompt(ag.ID, cmp.Or(workdir, h.st.root), goal, a.Note), workdir)
 	}
 	if err != nil {
 		h.mutateLocked(evLeave, LeaveParams{Agent: ag.ID, Reason: "spawn failed: " + err.Error()})

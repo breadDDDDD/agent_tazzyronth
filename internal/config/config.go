@@ -51,6 +51,10 @@ type Adapter struct {
 	// Stream is the format of the JSON event stream the worker prints on
 	// stdout (activity.Formats: claude, codex, gemini, antigravity); "" = none.
 	Stream string `json:"stream,omitempty"`
+	// Note is extra advice for this CLI appended to the worker's bootstrap
+	// prompt after the playbook; "" = none. A user adapter replaces the
+	// built-in of the same name whole, so an override without a note has none.
+	Note string `json:"note,omitempty"`
 }
 
 // Activity configures activity capture (plan §3.9).
@@ -147,7 +151,11 @@ var builtins = map[string]Adapter{
 		"--mode", "accept-edits",
 		"--print-timeout", "0s"},
 		Env:    map[string]string{"TAZZY_PROJECT": "{project}"},
-		Stream: "antigravity"},
+		Stream: "antigravity",
+		// One denied action ends a headless agy run at once (agy 1.4.2).
+		Note: "You run headless: any action not on the allow list ends your run at once and loses your work. " +
+			"Inspect and edit files only with your file tools (list, read, write, edit), never shell commands like Get-ChildItem, Test-Path, cat or ls. " +
+			"Run a shell command only when the task spec names it (e.g. go test) and it is expected to be allowed."},
 }
 
 // Default returns the configuration used when there is no config file.

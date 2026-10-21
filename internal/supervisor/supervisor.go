@@ -26,13 +26,17 @@ import (
 )
 
 // Prompt is the bootstrap prompt for a worker: who it is, then the worker
-// playbook.
-func Prompt(agent, workdir, goal string) string {
+// playbook, then the adapter's note (config.Adapter.Note) if any.
+func Prompt(agent, workdir, goal, note string) string {
 	if goal == "" {
 		goal = "(see tazzy_join)"
 	}
-	return fmt.Sprintf("You are worker %s in an Agent Tazzyronth swarm, working in %s. Your agent id is %q: pass agent=%q on every tazzy_* call.\nSwarm goal: %s\n\n",
+	p := fmt.Sprintf("You are worker %s in an Agent Tazzyronth swarm, working in %s. Your agent id is %q: pass agent=%q on every tazzy_* call.\nSwarm goal: %s\n\n",
 		agent, workdir, agent, agent, goal) + playbooks.Worker
+	if note != "" {
+		p += "\n" + note + "\n"
+	}
+	return p
 }
 
 // Supervisor owns the worker processes. Its methods are safe for concurrent use.
