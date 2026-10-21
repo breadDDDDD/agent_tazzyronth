@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -72,5 +73,57 @@ func TestSubagentTranscript(t *testing.T) {
 	own := filepath.Join("p", "S", "subagents", "agent-a1.jsonl")
 	if got := SubagentTranscript(own, "a1"); got != own {
 		t.Fatalf("own: got %q", got)
+	}
+}
+
+func TestStartOffset(t *testing.T) {
+	dir := t.TempDir()
+	line := `{"type":"assistant","message":{"id":"msg_%s","usage":{"input_tokens":%d,"output_tokens":1}}}` + "\n"
+	mk := func(id string, in int) string { return fmt.Sprintf(line, id, in) }
+
+	// A complete main transcript starts at its size.
+	main := filepath.Join(dir, "S.jsonl")
+	old := mk("a", 1000) + mk("b", 2000)
+	os.WriteFile(main, []byte(old), 0o644)
+	if got := StartOffset(main); got != int64(len(old)) {
+		t.Fatalf("main: %d, want %d", got, len(old))
+	}
+
+	// A half-written last line is left to be read later.
+	part := mk("c", 4)
+	os.WriteFile(main, []byte(old+part[:10]), 0o644)
+	off := StartOffset(main)
+	if off != int64(len(old)) {
+		t.Fatalf("partial: %d, want %d", off, len(old))
+	}
+	// Reading from there counts only what follows the baseline.
+	f, _ := os.OpenFile(main, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(part[10:] + mk("d", 8))
+	f.Close()
+	tr := Transcript{Offset: off}
+	if u, err := tr.Read(main); err != nil || u.Input != 4+8 {
+		t.Fatalf("read from start offset = %+v, %v", u, err)
+	}
+
+	// No newline at all: start at 0.
+	nonl := filepath.Join(dir, "N.jsonl")
+	os.WriteFile(nonl, []byte(part[:10]), 0o644)
+	if got := StartOffset(nonl); got != 0 {
+		t.Fatalf("no newline: %d", got)
+	}
+
+	// A subagent's own transcript counts from the start.
+	sub := SubagentTranscript(main, "x1")
+	os.MkdirAll(filepath.Dir(sub), 0o755)
+	os.WriteFile(sub, []byte(old), 0o644)
+	if got := StartOffset(sub); got != 0 {
+		t.Fatalf("subagent: %d", got)
+	}
+	if !IsSubagentTranscript(sub) || IsSubagentTranscript(main) {
+		t.Fatal("IsSubagentTranscript")
+	}
+
+	if got := StartOffset(filepath.Join(dir, "missing.jsonl")); got != 0 {
+		t.Fatalf("missing: %d", got)
 	}
 }

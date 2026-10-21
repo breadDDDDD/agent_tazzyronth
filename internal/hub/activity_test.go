@@ -274,16 +274,26 @@ func TestHookTranscriptUsage(t *testing.T) {
 	hook(`{"session_id":"S","hook_event_name":"PreToolUse","tool_name":"mcp__t__tazzy_status","tool_input":{"agent":"lead"}}`)
 	hook(`{"session_id":"S","agent_id":"sub-1","hook_event_name":"PreToolUse","tool_name":"mcp__t__tazzy_next","tool_input":{"agent":"w2"}}`)
 
+	// The lead's history before the swarm is not counted; the subagent's
+	// own transcript (born inside the swarm) is counted from its start.
 	hook(`{"session_id":"S","hook_event_name":"Stop","transcript_path":` + q(sess) + `}`)
 	hook(`{"session_id":"S","agent_id":"sub-1","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"x"},"tool_response":{},"transcript_path":` + q(sess) + `}`)
-	hook(`{"session_id":"S","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"x"},"tool_response":{},"transcript_path":` + q(sess) + `}`)
 	u := usage(call)
+	if u["lead"] != (activity.Tokens{}) || u["w2"] != (activity.Tokens{Input: 40, Output: 4}) {
+		t.Fatalf("usage = %+v", u)
+	}
+	// Lines the lead appends after its first hook count.
+	f, _ := os.OpenFile(sess, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(line("m4", 100, 10) + line("m4", 100, 10) + line("m5", 5, 1))
+	f.Close()
+	hook(`{"session_id":"S","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"x"},"tool_response":{},"transcript_path":` + q(sess) + `}`)
+	u = usage(call)
 	if u["lead"] != (activity.Tokens{Input: 105, Output: 11}) || u["w2"] != (activity.Tokens{Input: 40, Output: 4}) {
 		t.Fatalf("usage = %+v", u)
 	}
 
 	// Appended lines are counted on the next event; a restarted hub resumes.
-	f, _ := os.OpenFile(sess, os.O_APPEND|os.O_WRONLY, 0)
+	f, _ = os.OpenFile(sess, os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString(line("m3", 1, 1))
 	f.Close()
 	hook(`{"session_id":"S","hook_event_name":"Stop","transcript_path":` + q(sess) + `}`)

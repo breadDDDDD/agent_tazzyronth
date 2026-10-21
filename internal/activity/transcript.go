@@ -66,8 +66,50 @@ func (t *Transcript) Read(path string) (Tokens, error) {
 	t.Offset += int64(end + 1)
 	// A session transcript may hold its subagents' lines too (isSidechain,
 	// older Claude Code versions); those belong to the subagents.
-	sidechain := strings.HasPrefix(filepath.Base(path), "agent-")
-	return t.lines(b[:end+1], sidechain), nil
+	return t.lines(b[:end+1], IsSubagentTranscript(path)), nil
+}
+
+// IsSubagentTranscript reports whether path is a subagent's own transcript,
+// agent-<id>.jsonl (see SubagentTranscript), rather than a main session's.
+func IsSubagentTranscript(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasPrefix(base, "agent-") && strings.HasSuffix(base, ".jsonl")
+}
+
+// StartOffset is where to start reading a transcript seen for the first time:
+// 0 for a subagent's own transcript (born inside the swarm, so all of it
+// counts) or a missing file, else the end of its last complete line, so only
+// what the session writes from now on is counted. A partial last line is
+// left to be read once its newline arrives.
+func StartOffset(path string) int64 {
+	if IsSubagentTranscript(path) {
+		return 0
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return 0
+	}
+	end := fi.Size()
+	buf := make([]byte, 64<<10)
+	for end > 0 {
+		n := int64(len(buf))
+		if n > end {
+			n = end
+		}
+		if _, err := f.ReadAt(buf[:n], end-n); err != nil {
+			return 0
+		}
+		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			return end - n + int64(i) + 1
+		}
+		end -= n
+	}
+	return 0
 }
 
 func (t *Transcript) lines(b []byte, sidechain bool) Tokens {

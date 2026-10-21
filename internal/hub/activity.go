@@ -228,23 +228,15 @@ func (h *Hub) streamTo(agent, format string) io.WriteCloser {
 	return pw
 }
 
-// deniedNotified holds, per hub, the hub-spawned workers whose permission
-// denial the lead was already told about (key deniedKey).
-var deniedNotified sync.Map
-
-type deniedKey struct {
-	h     *Hub
-	agent string
-}
-
 // deniedLocked tells the lead, once per agent, that a hub-spawned worker's
 // CLI refused an action for want of an allow rule, which ends a headless agy
 // run (board decision AGY DENIAL FIX). Only streamTo calls it, and only
 // hub-spawned workers have their streams decoded. Called with h.mu held.
 func (h *Hub) deniedLocked(agent string, a activity.Activity) {
-	if _, told := deniedNotified.LoadOrStore(deniedKey{h, agent}, true); told {
+	if h.denied[agent] {
 		return
 	}
+	h.denied[agent] = true
 	var d struct{ Denied []activity.AgyDenial }
 	json.Unmarshal(a.Detail, &d)
 	what := strings.TrimSpace(a.Summary[strings.Index(a.Summary, ":")+1:])
@@ -334,9 +326,6 @@ func activityHook(h *Hub, _ *conn, raw json.RawMessage) (any, error) {
 	return res, nil
 }
 
-// hookTranscripts holds each hub's transcript readers (*Hub -> *transcripts).
-var hookTranscripts sync.Map
-
 // transcripts tracks how far each host transcript has been tallied.
 type transcripts struct {
 	mu sync.Mutex
@@ -348,18 +337,24 @@ type transcripts struct {
 // sessions report no usage in their hook payloads). Hub-spawned workers are
 // counted from their streams instead and never come here. A path seen for
 // the first time since the hub started resumes from the offset its last
-// usage event recorded, so a restart does not count a transcript twice.
+// usage event recorded, so a restart does not count a transcript twice;
+// one with no such event starts at activity.StartOffset (board decision
+// TOKEN BASELINE): a main session's history before the swarm is skipped, a
+// subagent's transcript counts from its start.
 func (h *Hub) transcriptUsage(agent, path string) {
 	if h.act == nil {
 		return
 	}
-	v, _ := hookTranscripts.LoadOrStore(h, &transcripts{m: map[string]*activity.Transcript{}})
-	ts := v.(*transcripts)
+	ts := &h.transcripts
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	tr := ts.m[path]
 	if tr == nil {
-		tr = &activity.Transcript{Offset: h.transcriptOffset(path)}
+		off, ok := h.transcriptOffset(path)
+		if !ok {
+			off = activity.StartOffset(path)
+		}
+		tr = &activity.Transcript{Offset: off}
 		ts.m[path] = tr
 	}
 	u, err := tr.Read(path)
@@ -378,9 +373,9 @@ type transcriptMark struct {
 }
 
 // transcriptOffset is the offset the latest remembered usage event read path
-// up to, or 0. Any agent's events count: the hook identity may have been
-// bound to another name before a restart.
-func (h *Hub) transcriptOffset(path string) int64 {
+// up to, and whether there is one. Any agent's events count: the hook
+// identity may have been bound to another name before a restart.
+func (h *Hub) transcriptOffset(path string) (int64, bool) {
 	rec := h.act.Recent("", 0, 0)
 	for i := len(rec) - 1; i >= 0; i-- {
 		a := rec[i]
@@ -389,10 +384,10 @@ func (h *Hub) transcriptOffset(path string) int64 {
 		}
 		var m transcriptMark
 		if json.Unmarshal(a.Detail, &m) == nil && m.Path == path {
-			return m.Offset
+			return m.Offset, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // status is the full snapshot plus the usage tally.

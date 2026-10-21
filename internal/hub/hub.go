@@ -93,6 +93,9 @@ type Hub struct {
 	stop chan struct{} // closed by Close
 	idle chan struct{} // closed once the hub has been idle for cfg.Timeouts.HubIdle
 
+	// transcripts has its own mutex: transcript reads stay outside mu.
+	transcripts transcripts
+
 	mu        sync.Mutex // guards everything below
 	st        *state
 	log       *store.Log
@@ -107,6 +110,7 @@ type Hub struct {
 	act       *activity.Store
 	watch     *diff.Watcher                 // snapshots of write-leased files
 	hookIDs   map[string]string             // host hook identity -> agent (plan §3.9 identity binding)
+	denied    map[string]bool               // hub-spawned workers whose denial the lead was told about
 	taps      map[chan store.Event]struct{} // in-process subscribers (the web view)
 	web       *web.Server
 	repo      *worktree.Repo // worktree isolation, once used
@@ -186,23 +190,25 @@ func StartWith(projectDir string, opt Options) (*Hub, error) {
 		return nil, err
 	}
 	h := &Hub{
-		dir:       projectDir,
-		info:      Info{Port: ln.Addr().(*net.TCPAddr).Port, Token: hex.EncodeToString(tok), PID: os.Getpid()},
-		ln:        ln,
-		cfg:       *cfg,
-		stop:      make(chan struct{}),
-		idle:      make(chan struct{}),
-		st:        st,
-		log:       log,
-		conns:     map[*conn]struct{}{},
-		seen:      map[string]time.Time{},
-		pinged:    map[string]time.Time{},
-		idleSince: map[string]time.Time{},
-		quietFrom: time.Now(),
-		act:       act,
-		watch:     diff.NewWatcher(root),
-		hookIDs:   map[string]string{},
-		taps:      map[chan store.Event]struct{}{},
+		dir:         projectDir,
+		info:        Info{Port: ln.Addr().(*net.TCPAddr).Port, Token: hex.EncodeToString(tok), PID: os.Getpid()},
+		ln:          ln,
+		cfg:         *cfg,
+		stop:        make(chan struct{}),
+		idle:        make(chan struct{}),
+		st:          st,
+		log:         log,
+		conns:       map[*conn]struct{}{},
+		seen:        map[string]time.Time{},
+		pinged:      map[string]time.Time{},
+		idleSince:   map[string]time.Time{},
+		quietFrom:   time.Now(),
+		act:         act,
+		watch:       diff.NewWatcher(root),
+		hookIDs:     map[string]string{},
+		denied:      map[string]bool{},
+		taps:        map[chan store.Event]struct{}{},
+		transcripts: transcripts{m: map[string]*activity.Transcript{}},
 	}
 	h.sup = supervisor.New(root, opt.Exe, h.workerExited)
 	h.sup.SetStdout(h.streamTo)

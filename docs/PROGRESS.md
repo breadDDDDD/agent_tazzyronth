@@ -385,10 +385,28 @@ Unverified: how a skill receives text typed after `/tazzy` (no doc covers it, so
 
 **Deviations**
 - The web view stays read-only: it shows the run state but has no pause/stop buttons.
-- The transcript reader's per-path state is a package-level `sync.Map` keyed by `*Hub` (`hub.go` was leased by another task); it could move to a `Hub` field. Host token counts lag by up to one turn (read when hooks fire).
+- Host token counts lag by up to one turn (read when hooks fire). (The transcript reader's per-path state, first a package-level `sync.Map`, now lives on `Hub`; see the token baseline below.)
 - agy workers need the global setup from `tazzy init`, and they inherit the user's global agy config. They can't run shell commands unless the user adds `command(...)` allow rules. `--dangerously-skip-permissions` is not used.
 
 **Unverified / remaining**
 - No full hub-spawned agy worker run. The `mcp(tazzyronth/*)` rule against a *global* server was not tried (the global `~/.gemini` config wasn't changed here); for a plugin server the rule form seen was `mcp(probe_probe/probe_echo)`.
 - The cwd of global MCP servers under Antigravity is very likely not the project, so a `/tazzy` lead there may get the wrong project dir. Follow-up task `mcp-roots-dir` would use MCP `roots/list` (agy advertises `roots`); until then pin `-dir` in the entry.
 - The Antigravity IDE/app keep permissions in their own settings UI. How args after `/tazzy` reach a skill is still undocumented. This phase replaces the earlier notes (Phases 7–8) that Antigravity's client name was unknown and that it had no adapter.
+
+### Live Antigravity test (2026-10-21)
+
+- Setup: an `agy` lead (`/tazzy`) and hub-spawned `agy` workers (agy 1.4.2) in a scratch repo, with 2 tasks. Both tasks finished as done, which also covers the hub-spawned agy worker run listed as unverified above.
+- Finding: 2 of the 3 workers died mid-task. In headless `agy -p`, **one** denied action ends the whole run immediately: `run_command Get-ChildItem` in one worker and `Test-Path bye.txt` in another had no `command(...)` allow rule. The denied step shows up as a `step_update` with state `ERROR` and `tool_info.parameters.CommandLine`. The `result` still says `status: SUCCESS`, with an empty response and `denied_actions: [{"action":"command","display_name":"RunCommand"}]`. The workers had used shell commands only to look at files.
+- Fix:
+  - `config.Adapter.Note` (`note`) is extra text the supervisor appends to the worker's bootstrap prompt after the playbook (`supervisor.Prompt(agent, workdir, goal, note)`). The built-in `antigravity` adapter's note says the worker runs headless and that any action not on the allow list ends its run and loses its work. It tells the worker to use file tools (list/read/write/edit), never shell commands like `Get-ChildItem`/`Test-Path`/`cat`/`ls`, and to run a shell command only when the spec names it.
+  - The `antigravity` decoder remembers each permission-denied ERROR step (`activity.AgyDenial`: `command` + its command line, truncated, or the tool name + file), deduped. The denial alert now names them: `denied (headless, no allow rule): command Get-ChildItem`, with Detail `{"denied":[...]}`. If the run reported no denied step, the alert falls back to the action names.
+  - When a hub-spawned worker's stream reports such a denial, the hub (`deniedLocked` in `internal/hub/activity.go`) sends the lead one blocker per agent: `<agent> stopped: agy denied <what>; add command(<prefix>) to permissions.allow in ~/.gemini/antigravity-cli/settings.json`.
+  - README recommends `command(...)` allow rules for build/test commands and read-only commands.
+- Tests: `TestNotes` (config), `TestPrompt` (supervisor), `TestDecodeAntigravity` (testdata gains denied steps modelled on the live logs, including a duplicate), `TestDecodeAntigravityDenialFallback`, hub `TestStreamDenialNotifiesLead` (two denied runs give exactly one lead message).
+
+### Token baseline (2026-10-21)
+
+- Finding: a lead running in a long Claude Code session had its whole earlier conversation counted (about 20M tokens for a tiny swarm), because a transcript the hub had never seen was read from offset 0.
+- Fix: a transcript path with no remembered offset starts at `activity.StartOffset(path)`. For a main session transcript that is the end of its last complete line (its size; a half-written last line is read later), so the lead's tokens count from the first hook the hub sees for it (its `tazzy_start`) on. A subagent's own transcript (`agent-<id>.jsonl`, `activity.IsSubagentTranscript`) starts at 0: it was born inside the swarm, so all of it counts. After a hub restart, reading still resumes from the offset in the recorded usage events.
+- Cleanup: the package-level `hookTranscripts` and `deniedNotified` `sync.Map`s in `internal/hub/activity.go` are now `Hub` fields: `transcripts` (its own mutex, so transcript reads stay outside `h.mu`) and `denied` (guarded by `h.mu`).
+- Tests: `TestStartOffset` (main -> size, trailing partial line, subagent -> 0, missing -> 0, a read from it counts only appended lines); hub `TestHookTranscriptUsage` now checks that lead history before the first hook counts 0.
