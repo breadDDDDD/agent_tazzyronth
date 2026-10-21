@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tazzyronth/internal/lease"
+	"tazzyronth/internal/sysproc"
 )
 
 const (
@@ -256,7 +257,9 @@ func (w *Watcher) Unattributed(paths []string, leases []lease.Lease) []string {
 // GitPrefix reports whether root is inside a git work tree (and git is
 // installed), and root's path within it ("" at the top, else "dir/").
 func GitPrefix(root string) (string, bool) {
-	out, err := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree", "--show-prefix").Output()
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree", "--show-prefix")
+	cmd.SysProcAttr = sysproc.NoWindow()
+	out, err := cmd.Output()
 	f := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if err != nil || f[0] != "true" {
 		return "", false
@@ -273,6 +276,7 @@ func GitPrefix(root string) (string, bool) {
 func GitStatus(root, prefix string) ([]string, error) {
 	cmd := exec.Command("git", "-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", ":(exclude).tazzyronth")
 	cmd.Dir = root
+	cmd.SysProcAttr = sysproc.NoWindow()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

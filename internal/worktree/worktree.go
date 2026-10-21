@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"tazzyronth/internal/sysproc"
 )
 
 // Repo is a project that is the top level of a git repository with at least
@@ -80,6 +82,7 @@ func Exists(dir string) bool {
 func (r *Repo) git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append(append([]string{"-c", "core.quotepath=off"}, r.ident...), args...)...)
 	cmd.Dir = dir
+	cmd.SysProcAttr = sysproc.NoWindow()
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {
